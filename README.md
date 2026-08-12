@@ -56,6 +56,9 @@ The default MVP, CI, node runtime, simulator, and demo do not require the `ml` g
 uv run distsequencer sim --nodes 2 --tempo 720 --bars 24 --seed 2026
 uv run distsequencer coordinator --tempo 120
 uv run distsequencer node --node-id pi-bass
+uv run distsequencer benchmark --output artifacts/benchmarks.json
+uv run distsequencer manifest --output artifacts/deployment.json
+uv run distsequencer pki --dir .local/pki --node-id pi-bass
 ```
 
 The legacy `uv run sequencer-sim` entry point remains available.
@@ -72,6 +75,13 @@ The legacy `uv run sequencer-sim` entry point remains available.
 - Network input uses bounded JSON envelopes with optional per-sender HMAC.
 - Clock sync is represented as offset, drift, and uncertainty estimates.
 - The scheduler uses only local clocks, prepared phrases, and synth backends.
+- Coordinator HA uses a Raft-style replicated log for leader election, quorum command commit,
+  persisted terms/votes/logs, and replayable coordinator commands.
+- Composition history is persisted to SQLite and can reload accepted phrase revisions.
+- Optional ML adapters exist for MidiGPT-style composition, MusicBERT-style critics,
+  MIDI-RWKV-style variation, and ONNX variation without importing model runtimes in core code.
+- PKI automation creates a local CA and node certificates for mTLS-enabled development clusters.
+- Physical deployment manifests and benchmark records are first-class package artifacts.
 
 ## Package Map
 
@@ -99,6 +109,9 @@ make test-unit
 make test-bdd
 make lint
 make typecheck
+make benchmark
+make manifest
+make pki
 ```
 
 ## GitHub Promotion
@@ -128,14 +141,17 @@ See `docs/adr/` for decisions covering:
 - assignment generations and bounded leases
 - secure bounded transport input
 - Jupyter and optional ML dependencies
+- consensus-backed coordinator
+- operational benchmarks and physical deployment
 
-## Deferred Work
+## Implemented Advanced Scope
 
-- Real composition ML adapters and learned critics
-- MIDI-RWKV/ONNX learned variation adapters
-- Quantization and hardware benchmarks
-- Stronger mTLS/PKI automation
-- Advanced synchronization/PTP
-- Persistent composition history
-- Coordinator HA/consensus
-- Physical swarm deployment and benchmarking
+- Real ML adapter boundaries are implemented for local model checkpoints and injected backends.
+- Quantization/hardware benchmark records capture model size, memory, latency, throughput, buffer
+  safety margin, and musical quality metrics.
+- Local PKI automation issues development CA and node certificates.
+- PTP-style synchronization estimates offset, drift, and uncertainty from timestamp exchanges.
+- SQLite composition history stores and reloads versioned canonical phrases.
+- Coordinator HA is backed by a Raft-style replicated command log.
+- Physical swarm deployment manifests validate node identity, control-plane security, and OSC
+  locality defaults.

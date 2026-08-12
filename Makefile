@@ -11,7 +11,7 @@ VERSION ?=
 
 export UV_CACHE_DIR
 
-.PHONY: help bootstrap sync ml lab lab-server lab-remote sim demo test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
+.PHONY: help bootstrap sync ml lab lab-server lab-remote sim demo benchmark pki manifest test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -38,6 +38,15 @@ sim: ## Run the in-process coordinator/node simulation
 	$(UV) run distsequencer sim
 
 demo: sim ## Run the distributed MVP demo
+
+benchmark: ## Write a local benchmark record
+	$(UV) run distsequencer benchmark
+
+pki: ## Create local development CA and node certificate
+	$(UV) run distsequencer pki --dir .local/pki --node-id node-1
+
+manifest: ## Write a physical deployment manifest
+	$(UV) run distsequencer manifest
 
 test: ## Run unit and BDD tests
 	$(UV) run pytest -q

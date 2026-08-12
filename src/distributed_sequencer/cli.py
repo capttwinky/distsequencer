@@ -3,7 +3,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import platform
+from dataclasses import asdict
+from pathlib import Path
 
+from distributed_sequencer.application.benchmark import (
+    BenchmarkRecord,
+    BenchmarkSuite,
+    HardwareProfile,
+)
+from distributed_sequencer.infrastructure.physical import DeploymentManifest, PhysicalNodeDeployment
+from distributed_sequencer.infrastructure.pki import LocalCertificateAuthority
 from distributed_sequencer.simulation import run_simulation
 
 
@@ -19,6 +29,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     node = subparsers.add_parser("node", help="print node runtime defaults")
     node.add_argument("--node-id", default="node-1")
+
+    pki = subparsers.add_parser("pki", help="create local development CA and node certificate")
+    pki.add_argument("--dir", default=".local/pki")
+    pki.add_argument("--node-id", default="node-1")
+
+    benchmark = subparsers.add_parser("benchmark", help="write a hardware benchmark record")
+    benchmark.add_argument("--output", default="artifacts/benchmarks.json")
+    benchmark.add_argument("--name", default="local-node")
+
+    manifest = subparsers.add_parser("manifest", help="write a physical deployment manifest")
+    manifest.add_argument("--output", default="artifacts/deployment.json")
+    manifest.add_argument("--node-id", default="pi-bass")
+    manifest.add_argument("--coordinator-url", default="https://coordinator.local")
 
     add_simulation_args(parser)
     return parser
@@ -44,6 +67,49 @@ def main() -> None:
         return
     if command == "node":
         print(json.dumps({"role": "node", "node_id": args.node_id}, sort_keys=True))
+        return
+    if command == "pki":
+        ca = LocalCertificateAuthority(Path(args.dir))
+        ca.bootstrap_ca()
+        paths = ca.issue_node_certificate(str(args.node_id))
+        print(json.dumps({field: str(value) for field, value in asdict(paths).items()}))
+        return
+    if command == "benchmark":
+        suite = BenchmarkSuite()
+        suite.record(
+            BenchmarkRecord(
+                name=str(args.name),
+                platform="local",
+                python_version=platform.python_version(),
+                model_size_mb=None,
+                resident_memory_mb=None,
+                variation_latency_ms=None,
+                throughput_events_per_second=None,
+                buffer_safety_margin_bars=None,
+                musical_quality_score=None,
+            )
+        )
+        suite.write_json(Path(args.output))
+        print(json.dumps({"benchmark_output": str(args.output)}, sort_keys=True))
+        return
+    if command == "manifest":
+        deployment = DeploymentManifest(
+            nodes=(
+                PhysicalNodeDeployment(
+                    profile=HardwareProfile(
+                        node_id=str(args.node_id),
+                        cpu="unknown",
+                        memory_mb=1024,
+                        os="unknown",
+                        audio_backend="osc",
+                        network="unknown",
+                    ),
+                    coordinator_url=str(args.coordinator_url),
+                ),
+            )
+        )
+        deployment.write_json(Path(args.output))
+        print(json.dumps({"manifest_output": str(args.output)}, sort_keys=True))
         return
     bpm = float(args.tempo if args.tempo is not None else args.bpm)
     asyncio.run(

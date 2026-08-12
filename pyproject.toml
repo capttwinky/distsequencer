@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Distributed Sequencer contributors" }]
-dependencies = []
+dependencies = [
+  "cryptography>=43",
+]
 
 [project.scripts]
 distsequencer = "distributed_sequencer.cli:main"
@@ -26,7 +28,10 @@ dev = [
   "pytest-bdd>=8.1",
   "ruff>=0.12",
 ]
-ml = []
+ml = [
+  "onnxruntime>=1.18",
+  "torch>=2.4",
+]
 
 [tool.uv]
 default-groups = ["dev"]
