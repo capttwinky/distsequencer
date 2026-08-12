@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "distributed-sequencer"
+version = "0.1.0"
+description = "Distributed generative music sequencer reference architecture"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Distributed Sequencer contributors" }]
+dependencies = []
+
+[project.scripts]
+distsequencer = "distributed_sequencer.cli:main"
+sequencer-sim = "distributed_sequencer.cli:main"
+
+[dependency-groups]
+dev = [
+  "build>=1.2",
+  "jupyterlab>=4.4",
+  "mypy>=1.17",
+  "pytest>=8.4",
+  "pytest-asyncio>=1.1",
+  "pytest-bdd>=8.1",
+  "ruff>=0.12",
+]
+ml = []
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/distributed_sequencer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["distributed-sequencer"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["distributed_sequencer"]
+mypy_path = "src"
