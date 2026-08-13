@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import shlex
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Self
+from urllib.parse import quote
 
+from distributed_sequencer.adapters.superdirt import (
+    DirtEvent,
+    default_superdirt_gain,
+    default_superdirt_sound,
+    phrase_to_dirt_events,
+)
 from distributed_sequencer.adapters.synth import RecordingSynth
+from distributed_sequencer.application.audio import render_phrases_wav
 from distributed_sequencer.application.composition import (
     CompositionEngine,
     DensityCritic,
@@ -16,6 +26,7 @@ from distributed_sequencer.application.coordinator import Coordinator
 from distributed_sequencer.application.node import SequencerNode
 from distributed_sequencer.application.scheduler import Scheduler
 from distributed_sequencer.application.variation import VariationEngine
+from distributed_sequencer.domain.music import Phrase
 from distributed_sequencer.domain.state import (
     Assignment,
     CompositionContext,
@@ -25,6 +36,8 @@ from distributed_sequencer.domain.state import (
 )
 from distributed_sequencer.infrastructure.clock import AdvancingClock
 from distributed_sequencer.infrastructure.messaging import InMemoryBus
+
+_STRUDEL_ORIGIN = "https://strudel.cc"
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +146,7 @@ class ReferencePerformanceLab:
     coordinator: Coordinator = field(init=False)
     nodes: dict[str, SequencerNode] = field(default_factory=dict)
     synths: dict[str, RecordingSynth] = field(default_factory=dict)
+    prepared_phrases: dict[str, Phrase] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.composition = CompositionEngine(
@@ -175,7 +189,9 @@ class ReferencePerformanceLab:
         for part in self.score.parts:
             assignment = await self.coordinator.compose_and_assign(part.context(), part.policy())
             assignments.append(assignment)
-            await self.nodes[assignment.node_id].receive_once()
+            self.prepared_phrases[assignment.part_id or assignment.phrase.role] = await self.nodes[
+                assignment.node_id
+            ].receive_once()
         for node in self.nodes.values():
             for ready in node.ready_reports:
                 self.coordinator.note_ready(ready)
@@ -198,6 +214,7 @@ class ReferencePerformanceLab:
             node_id=node_id,
         )
         await receive
+        self.prepared_phrases[assignment.part_id or assignment.phrase.role] = receive.result()
         for ready in node.ready_reports:
             self.coordinator.note_ready(ready)
         return _prepared_part(assignment)
@@ -217,11 +234,82 @@ class ReferencePerformanceLab:
             readiness=tuple(_ready_row(ready) for ready in self.coordinator.readiness.values()),
         )
 
+    def render_audio(self, *, sample_rate: int = 44_100) -> bytes:
+        """Render the current prepared performance as a stereo WAV mixdown."""
+        return render_phrases_wav(
+            self._prepared_phrase_list(),
+            tempo_bpm=self.score.tempo_bpm,
+            sample_rate=sample_rate,
+        )
+
+    def write_audio(self, path: str | Path = ".tmp/reference-lab.wav") -> Path:
+        """Write the current prepared performance to a browser-playable WAV file."""
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.render_audio())
+        return target
+
+    def superdirt_events(self) -> tuple[DirtEvent, ...]:
+        """Convert the prepared performance into `/dirt/play` OSC event payloads."""
+        phrases = self._prepared_phrase_list()
+        events: list[DirtEvent] = []
+        for index, phrase in enumerate(phrases):
+            events.extend(
+                phrase_to_dirt_events(
+                    phrase,
+                    tempo_bpm=self.score.tempo_bpm,
+                    sound=default_superdirt_sound(phrase),
+                    orbit=index,
+                    gain=default_superdirt_gain(phrase),
+                    pan=_superdirt_pan(index, len(phrases)),
+                )
+            )
+        return tuple(events)
+
+    def superdirt_table(self) -> tuple[dict[str, object], ...]:
+        """Return a notebook-friendly preview of the generated SuperDirt OSC events."""
+        return tuple(event.as_dict() for event in self.superdirt_events())
+
+    def strudel_code(self) -> str:
+        """Convert the current prepared performance into editable Strudel pattern code."""
+        phrases = self._prepared_phrase_list()
+        cps = self.score.tempo_bpm / 60.0 / max(1, max(phrase.beats_per_bar for phrase in phrases))
+        voices = ",\n".join(
+            f'  note("{_strudel_pattern(phrase)}")'
+            f'.sound("{_strudel_sound(phrase)}")'
+            f".gain({_strudel_gain(phrase):.2f})"
+            f".pan({_strudel_pan(index, len(phrases)):.2f})"
+            for index, phrase in enumerate(phrases)
+        )
+        return f"setcps({cps:.6g})\nstack(\n{voices}\n)"
+
+    def strudel_url(self) -> str:
+        """Return a Strudel REPL URL containing the current prepared performance."""
+        encoded = base64.b64encode(self.strudel_code().encode("utf-8")).decode("ascii")
+        return f"{_STRUDEL_ORIGIN}/#{quote(encoded, safe='')}"
+
+    def strudel_iframe(self, *, height: int = 420) -> str:
+        """Return notebook HTML that embeds the current performance in the Strudel REPL."""
+        return (
+            f'<iframe src="{self.strudel_url()}" width="100%" height="{height}" '
+            'allow="autoplay; midi; microphone" '
+            'style="border:1px solid #d0d7de;border-radius:8px"></iframe>'
+        )
+
     def _score_part(self, part_id: str) -> ScorePart:
         for part in self.score.parts:
             if part.part_id == part_id:
                 return part
         raise KeyError(f"unknown score part: {part_id}")
+
+    def _prepared_phrase_list(self) -> tuple[Phrase, ...]:
+        if not self.prepared_phrases:
+            raise RuntimeError("prepare_performance() must run before auditioning material")
+        return tuple(
+            self.prepared_phrases[part.part_id]
+            for part in self.score.parts
+            if part.part_id in self.prepared_phrases
+        )
 
     def _node_rows(self) -> tuple[dict[str, object], ...]:
         return tuple(
@@ -371,3 +459,45 @@ def _ready_row(ready: PhraseReady) -> dict[str, object]:
         "ready_through_bar": ready.ready_through_bar,
         "transport_epoch": ready.transport_epoch,
     }
+
+
+def _strudel_pattern(phrase: Phrase, *, steps_per_beat: int = 4) -> str:
+    total_steps = phrase.bars * phrase.beats_per_bar * steps_per_beat
+    step_ticks = phrase.ticks_per_beat / steps_per_beat
+    steps: list[list[int]] = [[] for _ in range(total_steps)]
+    for event in phrase.events:
+        step = min(total_steps - 1, max(0, round(event.onset_tick / step_ticks)))
+        steps[step].append(event.pitch)
+    return " ".join(_strudel_step(pitches) for pitches in steps)
+
+
+def _strudel_step(pitches: list[int]) -> str:
+    if not pitches:
+        return "~"
+    if len(pitches) == 1:
+        return str(pitches[0])
+    return "[" + " ".join(str(pitch) for pitch in sorted(pitches)) + "]"
+
+
+def _strudel_sound(phrase: Phrase) -> str:
+    if phrase.role.lower() in {"bass", "sub", "low"}:
+        return "pulse"
+    return "saw"
+
+
+def _strudel_gain(phrase: Phrase) -> float:
+    if phrase.role.lower() in {"bass", "sub", "low"}:
+        return 0.38
+    return 0.28
+
+
+def _strudel_pan(index: int, count: int) -> float:
+    if count <= 1:
+        return 0.0
+    return -0.45 + 0.9 * index / (count - 1)
+
+
+def _superdirt_pan(index: int, count: int) -> float:
+    if count <= 1:
+        return 0.5
+    return 0.15 + 0.7 * index / (count - 1)

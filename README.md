@@ -40,7 +40,12 @@ make lab
 
 The notebook `notebooks/00_architecture_playground.ipynb` is a full reference lab covering the
 music DSL, mesh membership, performance score preparation, performance management, and dashboard
-snapshots.
+snapshots. It includes browser audition through generated Strudel code, a local WAV fallback, and a
+direct SuperDirt OSC preview path:
+
+```text
+music DSL -> Phrase IR -> OSC /dirt/play events -> SuperDirt
+```
 
 For an explicitly remote Jupyter server:
 

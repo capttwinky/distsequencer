@@ -15,7 +15,8 @@ CONTAINER_RUN_FLAGS ?=
 PODMAN ?= podman
 PODMAN_BUILD_FLAGS ?= --network=host
 PODMAN_RUN_FLAGS ?= --network=none
-PYTEST_BASETEMP ?= $(CURDIR)/.tmp/pytest-basetemp-$$$$
+PYTEST_RUN_ID ?= $(shell python -c "import uuid; print(uuid.uuid4().hex)")
+PYTEST_BASETEMP ?= $(CURDIR)/.tmp/pytest-basetemp-$(PYTEST_RUN_ID)
 PYTEST_FLAGS ?= --basetemp=$(PYTEST_BASETEMP) -p no:cacheprovider
 
 export UV_CACHE_DIR

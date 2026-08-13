@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import base64
+import wave
+from io import BytesIO
+from urllib.parse import unquote
+
 import pytest
 
 from distributed_sequencer.application.lab import (
@@ -53,6 +58,57 @@ async def test_reference_lab_can_add_mesh_node_and_reassign_after_lease() -> Non
     assert reassigned.node_id == "node-standby"
     assert reassigned.assignment_generation == 2
     assert any(node["node_id"] == "node-standby" for node in dashboard["nodes"])
+
+
+@pytest.mark.asyncio
+async def test_reference_lab_exports_strudel_repl_url() -> None:
+    lab = ReferencePerformanceLab.from_dsl(DSL, seed=13)
+    await lab.prepare_performance()
+
+    code = lab.strudel_code()
+    url = lab.strudel_url()
+    fragment = url.split("#", maxsplit=1)[1]
+    decoded = base64.b64decode(unquote(fragment)).decode("utf-8")
+
+    assert code == decoded
+    assert url.startswith("https://strudel.cc/#")
+    assert "setcps(" in code
+    assert "stack(" in code
+    assert '.sound("pulse")' in code
+    assert '.sound("saw")' in code
+    assert "iframe" in lab.strudel_iframe()
+
+
+@pytest.mark.asyncio
+async def test_reference_lab_previews_superdirt_osc_events() -> None:
+    lab = ReferencePerformanceLab.from_dsl(DSL, seed=15)
+    await lab.prepare_performance()
+
+    events = lab.superdirt_events()
+    rows = lab.superdirt_table()
+
+    assert len(events) == len(rows)
+    assert {row["sound"] for row in rows} == {"super808", "superpiano"}
+    assert {row["orbit"] for row in rows} == {0, 1}
+    assert all(row["cycle"] >= 0 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_reference_lab_renders_browser_playable_wav(tmp_path) -> None:
+    lab = ReferencePerformanceLab.from_dsl(DSL, seed=14)
+    await lab.prepare_performance()
+
+    wav_bytes = lab.render_audio()
+    path = lab.write_audio(tmp_path / "audition.wav")
+
+    assert wav_bytes.startswith(b"RIFF")
+    assert path.read_bytes().startswith(b"RIFF")
+    with wave.open(BytesIO(wav_bytes), "rb") as wav:
+        assert wav.getnchannels() == 2
+        assert wav.getsampwidth() == 2
+        assert wav.getframerate() == 44_100
+        assert wav.getnframes() > 0
+        assert any(wav.readframes(wav.getnframes()))
 
 
 def test_music_dsl_rejects_unknown_commands() -> None:
