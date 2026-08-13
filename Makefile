@@ -10,6 +10,11 @@ GIT_REMOTE ?= origin
 VERSION ?=
 IMAGE ?= distsequencer:latest
 CONTAINER ?= docker
+CONTAINER_BUILD_FLAGS ?=
+CONTAINER_RUN_FLAGS ?=
+PODMAN ?= podman
+PODMAN_BUILD_FLAGS ?= --network=host
+PODMAN_RUN_FLAGS ?= --network=none
 
 export UV_CACHE_DIR
 
@@ -51,20 +56,20 @@ manifest: ## Write a physical deployment manifest
 	$(UV) run distsequencer manifest
 
 container-build: ## Build the runtime container image
-	$(CONTAINER) build -t $(IMAGE) .
+	$(CONTAINER) build $(CONTAINER_BUILD_FLAGS) -t $(IMAGE) .
 
 container-run: ## Run the simulator in the runtime container image
-	$(CONTAINER) run --rm $(IMAGE) sim
+	$(CONTAINER) run --rm $(CONTAINER_RUN_FLAGS) $(IMAGE) sim
 
 docker-build: container-build ## Build with Docker
 
 docker-run: container-run ## Run with Docker
 
 podman-build: ## Build with Podman
-	$(MAKE) container-build CONTAINER=podman
+	$(MAKE) container-build CONTAINER=$(PODMAN) CONTAINER_BUILD_FLAGS="$(PODMAN_BUILD_FLAGS)"
 
 podman-run: ## Run with Podman
-	$(MAKE) container-run CONTAINER=podman
+	$(MAKE) container-run CONTAINER=$(PODMAN) CONTAINER_RUN_FLAGS="$(PODMAN_RUN_FLAGS)"
 
 test: ## Run unit and BDD tests
 	$(UV) run pytest -q
