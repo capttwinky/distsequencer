@@ -34,6 +34,7 @@ make demo
 Launch JupyterLab locally with token authentication left on:
 
 ```bash
+make kernel
 make lab
 ```
 

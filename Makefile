@@ -20,7 +20,7 @@ PYTEST_FLAGS ?= --basetemp=$(PYTEST_BASETEMP) -p no:cacheprovider
 
 export UV_CACHE_DIR
 
-.PHONY: help bootstrap sync ml lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
+.PHONY: help bootstrap sync ml kernel lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -35,7 +35,10 @@ sync: ## Synchronize the uv environment
 ml: ## Synchronize optional ML dependency group
 	$(UV) sync --python $(PYTHON_VERSION) --group ml
 
-lab: ## Launch JupyterLab locally
+kernel: ## Install the project .venv Jupyter kernel and pin notebooks to it
+	$(UV) run python scripts/install_jupyter_kernel.py
+
+lab: kernel ## Launch JupyterLab locally
 	$(UV) run jupyter lab --ip=$(JUPYTER_IP) --port=$(JUPYTER_PORT) --no-browser --ServerApp.root_dir=.
 
 lab-server: ## Launch JupyterLab on all interfaces (token authentication remains enabled)
