@@ -21,5 +21,7 @@ jobs:
         run: make bootstrap
       - name: Run quality gates
         run: make check
+      - name: Verify release readiness docs
+        run: make release-readiness-check
       - name: Build distributions
         run: uv build

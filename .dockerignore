@@ -4,7 +4,10 @@
 uv-cache-root
 .mypy_cache
 .pytest_cache
+.pytest-cache-local
+.pytest-tmp
 .ruff_cache
+.tmp
 __pycache__
 *.pyc
 dist

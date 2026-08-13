@@ -15,10 +15,12 @@ CONTAINER_RUN_FLAGS ?=
 PODMAN ?= podman
 PODMAN_BUILD_FLAGS ?= --network=host
 PODMAN_RUN_FLAGS ?= --network=none
+PYTEST_BASETEMP ?= $(CURDIR)/.tmp/pytest-basetemp-$$$$
+PYTEST_FLAGS ?= --basetemp=$(PYTEST_BASETEMP) -p no:cacheprovider
 
 export UV_CACHE_DIR
 
-.PHONY: help bootstrap sync ml lab lab-server lab-remote sim demo benchmark pki manifest container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
+.PHONY: help bootstrap sync ml lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -55,6 +57,9 @@ pki: ## Create local development CA and node certificate
 manifest: ## Write a physical deployment manifest
 	$(UV) run distsequencer manifest
 
+release-readiness-check: ## Verify release readiness docs and static release assets exist
+	$(UV) run python scripts/release_readiness_check.py
+
 container-build: ## Build the runtime container image
 	$(CONTAINER) build $(CONTAINER_BUILD_FLAGS) -t $(IMAGE) .
 
@@ -72,13 +77,16 @@ podman-run: ## Run with Podman
 	$(MAKE) container-run CONTAINER=$(PODMAN) CONTAINER_RUN_FLAGS="$(PODMAN_RUN_FLAGS)"
 
 test: ## Run unit and BDD tests
-	$(UV) run pytest -q
+	$(UV) run python -c "import pathlib; pathlib.Path('.tmp').mkdir(exist_ok=True)"
+	$(UV) run pytest -q $(PYTEST_FLAGS)
 
 test-unit: ## Run non-BDD unit tests
-	$(UV) run pytest -q tests -k "not bdd"
+	$(UV) run python -c "import pathlib; pathlib.Path('.tmp').mkdir(exist_ok=True)"
+	$(UV) run pytest -q tests -k "not bdd" $(PYTEST_FLAGS)
 
 test-bdd: ## Run BDD scenarios
-	$(UV) run pytest -q tests/test_bdd_autonomy.py
+	$(UV) run python -c "import pathlib; pathlib.Path('.tmp').mkdir(exist_ok=True)"
+	$(UV) run pytest -q tests/test_bdd_autonomy.py $(PYTEST_FLAGS)
 
 lint: ## Run Ruff lint checks
 	$(UV) run ruff check .

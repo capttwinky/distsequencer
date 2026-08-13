@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from distributed_sequencer.application.coordinator import Coordinator
 from distributed_sequencer.domain.state import (
@@ -10,7 +11,16 @@ from distributed_sequencer.domain.state import (
     NodeCapabilities,
     VariationPolicy,
 )
-from distributed_sequencer.infrastructure.consensus import RaftCluster, RaftLogEntry
+from distributed_sequencer.infrastructure.consensus import (
+    JsonRaftStorage,
+    RaftCluster,
+    RaftLogEntry,
+    RaftStorage,
+)
+
+
+class NotLeaderError(RuntimeError):
+    """Raised when a follower receives a leader-only coordinator mutation."""
 
 
 def _as_int(value: object) -> int:
@@ -51,6 +61,52 @@ class CoordinatorCommand:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ConsensusMemberSettings:
+    member_id: str
+    storage_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConsensusCoordinatorSettings:
+    local_member_id: str
+    members: tuple[ConsensusMemberSettings, ...]
+    bootstrap_leader_id: str | None = None
+
+    @classmethod
+    def from_member_ids(
+        cls,
+        member_ids: tuple[str, ...],
+        *,
+        local_member_id: str,
+        storage_dir: Path | None = None,
+        bootstrap_leader_id: str | None = None,
+    ) -> ConsensusCoordinatorSettings:
+        members = tuple(
+            ConsensusMemberSettings(
+                member_id=member_id,
+                storage_path=None if storage_dir is None else storage_dir / f"{member_id}.json",
+            )
+            for member_id in member_ids
+        )
+        return cls(
+            local_member_id=local_member_id,
+            members=members,
+            bootstrap_leader_id=bootstrap_leader_id,
+        )
+
+    @property
+    def member_ids(self) -> tuple[str, ...]:
+        return tuple(member.member_id for member in self.members)
+
+    def storages(self) -> dict[str, RaftStorage]:
+        return {
+            member.member_id: JsonRaftStorage(member.storage_path)
+            for member in self.members
+            if member.storage_path is not None
+        }
+
+
 @dataclass(slots=True)
 class ConsensusBackedCoordinator:
     """Coordinator facade that commits mutations through Raft before applying them."""
@@ -62,13 +118,23 @@ class ConsensusBackedCoordinator:
 
     @classmethod
     def create(
-        cls, coordinator: Coordinator, member_ids: tuple[str, ...]
+        cls,
+        coordinator: Coordinator,
+        member_ids: tuple[str, ...],
+        *,
+        leader_id: str | None = None,
     ) -> ConsensusBackedCoordinator:
         cluster = RaftCluster.create(member_ids)
-        cluster.elect(member_ids[0])
+        cluster.elect(leader_id or member_ids[0])
         return cls(coordinator=coordinator, cluster=cluster)
 
-    async def register(self, capabilities: NodeCapabilities) -> RaftLogEntry:
+    async def register(
+        self,
+        capabilities: NodeCapabilities,
+        *,
+        member_id: str | None = None,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
         command = self._command(
             "register_node",
             {
@@ -78,17 +144,35 @@ class ConsensusBackedCoordinator:
                 "learned_variation": capabilities.learned_variation,
             },
         )
-        entry = self._commit(command)
+        entry = self._commit(command, member_id=member_id, available_members=available_members)
         await self.apply_entry(entry)
         return entry
 
-    async def start_transport(self) -> RaftLogEntry:
-        entry = self._commit(self._command("start_transport", {}))
+    async def start_transport(
+        self,
+        *,
+        member_id: str | None = None,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
+        entry = self._commit(
+            self._command("start_transport", {}),
+            member_id=member_id,
+            available_members=available_members,
+        )
         await self.apply_entry(entry)
         return entry
 
-    async def restart_transport(self) -> RaftLogEntry:
-        entry = self._commit(self._command("restart_transport", {}))
+    async def restart_transport(
+        self,
+        *,
+        member_id: str | None = None,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
+        entry = self._commit(
+            self._command("restart_transport", {}),
+            member_id=member_id,
+            available_members=available_members,
+        )
         await self.apply_entry(entry)
         return entry
 
@@ -98,6 +182,8 @@ class ConsensusBackedCoordinator:
         policy: VariationPolicy,
         *,
         node_id: str | None = None,
+        member_id: str | None = None,
+        available_members: set[str] | None = None,
     ) -> Assignment:
         command = self._command(
             "compose_and_assign",
@@ -112,13 +198,30 @@ class ConsensusBackedCoordinator:
                 "node_id": node_id,
             },
         )
-        entry = self._commit(command)
+        entry = self._commit(command, member_id=member_id, available_members=available_members)
         applied = await self.apply_entry(entry)
         assert isinstance(applied, Assignment)
         return applied
 
-    def _commit(self, command: CoordinatorCommand) -> RaftLogEntry:
-        return self.cluster.append_command(command.command_id, command.encode())
+    def _commit(
+        self,
+        command: CoordinatorCommand,
+        *,
+        member_id: str | None = None,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
+        if member_id is None:
+            return self.cluster.append_command(
+                command.command_id,
+                command.encode(),
+                available_members=available_members,
+            )
+        return self.cluster.append_command_from(
+            member_id,
+            command.command_id,
+            command.encode(),
+            available_members=available_members,
+        )
 
     async def apply_committed_entries(self, node_id: str) -> tuple[object | None, ...]:
         return tuple(
@@ -127,6 +230,7 @@ class ConsensusBackedCoordinator:
 
     async def apply_entry(self, entry: RaftLogEntry) -> object | None:
         command = CoordinatorCommand.decode(entry.command)
+        self._observe_command_counter(command.command_id)
         if command.command_id in self.applied_command_ids:
             return None
         if command.kind == "register_node":
@@ -191,3 +295,112 @@ class ConsensusBackedCoordinator:
             kind=kind,
             payload=payload,
         )
+
+    def _observe_command_counter(self, command_id: str) -> None:
+        try:
+            counter = int(command_id.rsplit(":", maxsplit=1)[1])
+        except (IndexError, ValueError):
+            return
+        self.command_counter = max(self.command_counter, counter)
+
+
+@dataclass(slots=True)
+class ConsensusCoordinatorService:
+    """Operational HA facade for one local coordinator member."""
+
+    local_member_id: str
+    ha: ConsensusBackedCoordinator
+
+    @classmethod
+    def create(
+        cls,
+        coordinator: Coordinator,
+        settings: ConsensusCoordinatorSettings,
+    ) -> ConsensusCoordinatorService:
+        if settings.local_member_id not in settings.member_ids:
+            raise ValueError("local member must be part of the consensus cluster")
+        cluster = RaftCluster.create(settings.member_ids, storages=settings.storages())
+        cluster.recover_commit_index()
+        if settings.bootstrap_leader_id is not None:
+            cluster.elect(settings.bootstrap_leader_id)
+        return cls(
+            local_member_id=settings.local_member_id,
+            ha=ConsensusBackedCoordinator(coordinator=coordinator, cluster=cluster),
+        )
+
+    @property
+    def leader_id(self) -> str | None:
+        return self.ha.cluster.leader_id
+
+    def elect_leader(
+        self,
+        candidate_id: str | None = None,
+        *,
+        available_members: set[str] | None = None,
+    ) -> None:
+        self.ha.cluster.elect(
+            candidate_id or self.local_member_id,
+            available_members=available_members,
+        )
+
+    async def replay_committed(self) -> tuple[object | None, ...]:
+        return await self.ha.apply_committed_entries(self.local_member_id)
+
+    async def register(
+        self,
+        capabilities: NodeCapabilities,
+        *,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
+        self._require_local_leader()
+        return await self.ha.register(
+            capabilities,
+            member_id=self.local_member_id,
+            available_members=available_members,
+        )
+
+    async def start_transport(
+        self,
+        *,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
+        self._require_local_leader()
+        return await self.ha.start_transport(
+            member_id=self.local_member_id,
+            available_members=available_members,
+        )
+
+    async def restart_transport(
+        self,
+        *,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
+        self._require_local_leader()
+        return await self.ha.restart_transport(
+            member_id=self.local_member_id,
+            available_members=available_members,
+        )
+
+    async def compose_and_assign(
+        self,
+        context: CompositionContext,
+        policy: VariationPolicy,
+        *,
+        node_id: str | None = None,
+        available_members: set[str] | None = None,
+    ) -> Assignment:
+        self._require_local_leader()
+        return await self.ha.compose_and_assign(
+            context,
+            policy,
+            node_id=node_id,
+            member_id=self.local_member_id,
+            available_members=available_members,
+        )
+
+    def _require_local_leader(self) -> None:
+        if self.leader_id != self.local_member_id:
+            raise NotLeaderError(
+                f"member {self.local_member_id!r} is not leader; "
+                f"current leader is {self.leader_id!r}"
+            )

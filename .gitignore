@@ -4,8 +4,11 @@ uv-cache-root/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-cache-local/
+.pytest-tmp/
 .mypy_cache/
 .ruff_cache/
+.tmp/
 .ipynb_checkpoints/
 dist/
 build/

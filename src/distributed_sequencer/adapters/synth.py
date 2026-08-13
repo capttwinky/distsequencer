@@ -42,7 +42,7 @@ class RecordingSynth:
 class OscSynthBackend:
     """Minimal local OSC-compatible UDP backend.
 
-    The MVP keeps OSC on loopback by default. Messages are simple text OSC-like
+    The reference runtime keeps OSC on loopback by default. Messages are simple text OSC-like
     packets for easy inspection by local synth shims: ``/note_on p v c`` and
     ``/note_off p c``.
     """

@@ -1,0 +1,17 @@
+[coordinator]
+listen = "tcp://127.0.0.1:7000"
+tempo_bpm = 120.0
+lease_bars = 4
+parts = ["bass", "lead"]
+
+[transport]
+mode = "tcp"
+insecure_dev_mode = true
+
+# Uncomment for a local HA reference run with persisted Raft member logs.
+# [ha]
+# enabled = true
+# local_member_id = "r1"
+# member_ids = ["r1", "r2", "r3"]
+# storage_dir = ".local/raft"
+# bootstrap_leader_id = "r1"

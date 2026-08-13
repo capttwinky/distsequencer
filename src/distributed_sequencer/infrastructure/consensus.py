@@ -276,14 +276,23 @@ class RaftCluster:
     leader_id: str | None = None
 
     @classmethod
-    def create(cls, member_ids: tuple[str, ...]) -> RaftCluster:
+    def create(
+        cls,
+        member_ids: tuple[str, ...],
+        *,
+        storages: dict[str, RaftStorage] | None = None,
+    ) -> RaftCluster:
         if len(member_ids) < 3:
             raise ValueError("Raft requires at least three members for HA")
+        configured_storages = storages or {}
+        unknown_storage = set(configured_storages) - set(member_ids)
+        if unknown_storage:
+            raise ValueError(f"storage configured for unknown members: {sorted(unknown_storage)}")
         nodes = {
             member_id: RaftNode(
                 node_id=member_id,
                 peer_ids=tuple(peer for peer in member_ids if peer != member_id),
-                storage=MemoryRaftStorage(),
+                storage=configured_storages.get(member_id, MemoryRaftStorage()),
             )
             for member_id in member_ids
         }
@@ -316,8 +325,9 @@ class RaftCluster:
         self.leader_id = candidate_id
         return candidate
 
-    def append_command(
+    def append_command_from(
         self,
+        member_id: str,
         command_id: str,
         command: str,
         *,
@@ -325,6 +335,8 @@ class RaftCluster:
     ) -> RaftLogEntry:
         if self.leader_id is None:
             raise RuntimeError("no leader elected")
+        if member_id != self.leader_id:
+            raise RuntimeError(f"member {member_id!r} is not the elected leader")
         available = available_members or set(self.nodes)
         if self.leader_id not in available:
             raise RuntimeError("leader is unavailable")
@@ -341,8 +353,43 @@ class RaftCluster:
             self._replicate_to(leader, self.nodes[member_id])
         return entry
 
+    def append_command(
+        self,
+        command_id: str,
+        command: str,
+        *,
+        available_members: set[str] | None = None,
+    ) -> RaftLogEntry:
+        if self.leader_id is None:
+            raise RuntimeError("no leader elected")
+        return self.append_command_from(
+            self.leader_id,
+            command_id,
+            command,
+            available_members=available_members,
+        )
+
     def committed_entries(self, node_id: str) -> tuple[RaftLogEntry, ...]:
         return self.nodes[node_id].apply_committed()
+
+    def recover_commit_index(self) -> int:
+        """Recover the highest durable, quorum-replicated index after process restart."""
+
+        max_index = max((node.last_log_index for node in self.nodes.values()), default=0)
+        recovered = 0
+        for index in range(1, max_index + 1):
+            entry_counts: dict[RaftLogEntry, int] = {}
+            for node in self.nodes.values():
+                if node.last_log_index < index:
+                    continue
+                entry = node.log[index - 1]
+                entry_counts[entry] = entry_counts.get(entry, 0) + 1
+            if not any(count >= self.quorum_size for count in entry_counts.values()):
+                break
+            recovered = index
+        for node in self.nodes.values():
+            node.mark_committed(recovered)
+        return recovered
 
     def _replicate_to(self, leader: RaftNode, follower: RaftNode) -> bool:
         next_index = follower.last_log_index + 1

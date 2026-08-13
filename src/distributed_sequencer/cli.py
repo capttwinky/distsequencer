@@ -14,6 +14,8 @@ from distributed_sequencer.application.benchmark import (
 )
 from distributed_sequencer.infrastructure.physical import DeploymentManifest, PhysicalNodeDeployment
 from distributed_sequencer.infrastructure.pki import LocalCertificateAuthority
+from distributed_sequencer.runtime.config import Endpoint, load_coordinator_config, load_node_config
+from distributed_sequencer.runtime.daemon import run_coordinator_daemon, run_node_daemon
 from distributed_sequencer.simulation import run_simulation
 
 
@@ -24,11 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     sim = subparsers.add_parser("sim", help="run the in-process distributed simulation")
     add_simulation_args(sim)
 
-    coordinator = subparsers.add_parser("coordinator", help="print coordinator defaults")
+    coordinator = subparsers.add_parser("coordinator", help="run a coordinator daemon")
     coordinator.add_argument("--tempo", type=float, default=120.0)
+    coordinator.add_argument("--config", type=Path, default=None)
+    coordinator.add_argument("--ready-listen", default="http://127.0.0.1:8081")
 
-    node = subparsers.add_parser("node", help="print node runtime defaults")
+    node = subparsers.add_parser("node", help="run a node daemon")
     node.add_argument("--node-id", default="node-1")
+    node.add_argument("--config", type=Path, default=None)
+    node.add_argument("--ready-listen", default="http://127.0.0.1:8082")
 
     pki = subparsers.add_parser("pki", help="create local development CA and node certificate")
     pki.add_argument("--dir", default=".local/pki")
@@ -63,9 +69,25 @@ def main() -> None:
     args = build_parser().parse_args()
     command = args.command or "sim"
     if command == "coordinator":
+        if args.config is not None:
+            asyncio.run(
+                run_coordinator_daemon(
+                    load_coordinator_config(args.config),
+                    ready_endpoint=Endpoint.parse(args.ready_listen, expected_scheme="http"),
+                )
+            )
+            return
         print(json.dumps({"role": "coordinator", "tempo_bpm": args.tempo}, sort_keys=True))
         return
     if command == "node":
+        if args.config is not None:
+            asyncio.run(
+                run_node_daemon(
+                    load_node_config(args.config),
+                    ready_endpoint=Endpoint.parse(args.ready_listen, expected_scheme="http"),
+                )
+            )
+            return
         print(json.dumps({"role": "node", "node_id": args.node_id}, sort_keys=True))
         return
     if command == "pki":

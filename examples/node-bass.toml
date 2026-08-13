@@ -1,0 +1,12 @@
+[node]
+id = "node-bass"
+parts = ["bass"]
+coordinator_url = "tcp://127.0.0.1:7000"
+buffer_depth_bars = 8
+
+[transport]
+mode = "tcp"
+insecure_dev_mode = true
+
+[synth]
+backend = "recording"

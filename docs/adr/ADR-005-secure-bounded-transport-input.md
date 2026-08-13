@@ -11,6 +11,6 @@ payload, and optional per-sender HMAC. Python object deserialization is not used
 
 ## Consequences
 
-The MVP can run locally with object messages over `InMemoryBus`, while the application protocol has a
+The reference implementation can run locally with object messages over `InMemoryBus`, while the application protocol has a
 safe serialization boundary for a real network transport. Future mTLS can replace or complement the
 interim per-node secret mechanism.
