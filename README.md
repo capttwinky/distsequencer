@@ -37,6 +37,10 @@ Launch JupyterLab locally with token authentication left on:
 make lab
 ```
 
+The notebook `notebooks/00_architecture_playground.ipynb` is a full reference lab covering the
+music DSL, mesh membership, performance score preparation, performance management, and dashboard
+snapshots.
+
 For an explicitly remote Jupyter server:
 
 ```bash
