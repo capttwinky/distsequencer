@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="documented OSC host")
     parser.add_argument("--port", type=int, default=57120, help="SuperDirt OSC UDP port")
     parser.add_argument("--bind-address", default="0.0.0.0", help="SuperDirt listen address")
+    parser.add_argument("--check", action="store_true", help="check SuperCollider availability")
     parser.add_argument("--foreground", action="store_true", help="run sclang in the foreground")
     parser.add_argument("--pid-file", type=Path, default=Path(".tmp/superdirt/sclang.pid"))
     parser.add_argument("--log-file", type=Path, default=Path(".tmp/superdirt/sclang.log"))
@@ -37,10 +38,12 @@ def main() -> None:
 
     sclang = _find_sclang()
     if sclang is None:
-        raise SystemExit(
-            "sclang was not found. Install SuperCollider or set SCLANG to the sclang executable "
-            "before running `make superdirt` or `make lab`."
-        )
+        raise SystemExit(_missing_sclang_message())
+    if args.check:
+        print(f"sclang: {sclang}")
+        print(f"OSC target: {args.host}:{args.port}")
+        print("SuperDirt startup will be verified by `make superdirt`.")
+        return
 
     if _pid_running(args.pid_file):
         print(f"SuperDirt launcher already running from {args.pid_file}")
@@ -89,6 +92,22 @@ def _find_sclang() -> str | None:
         if candidate.exists():
             return str(candidate)
     return None
+
+
+def _missing_sclang_message() -> str:
+    chocolatey_hint = ""
+    if shutil.which("choco"):
+        chocolatey_hint = (
+            "\nChocolatey is available on this machine. From an Administrator PowerShell, run:\n"
+            "  choco install SuperCollider superdirt -y\n"
+        )
+    return (
+        "sclang was not found. Install SuperCollider with the SuperDirt Quark, or set SCLANG "
+        "to the sclang executable before running `make superdirt` or `make lab`."
+        f"{chocolatey_hint}\n"
+        "Example:\n"
+        '  $env:SCLANG="C:\\Program Files\\SuperCollider-3.12.1\\sclang.exe"; make lab'
+    )
 
 
 def render_startup_script(*, port: int, bind_address: str) -> str:

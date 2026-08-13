@@ -25,7 +25,7 @@ PYTEST_FLAGS ?= --basetemp=$(PYTEST_BASETEMP) -p no:cacheprovider
 
 export UV_CACHE_DIR SUPERDIRT_HOST SUPERDIRT_PORT
 
-.PHONY: help bootstrap sync ml kernel superdirt superdirt-foreground lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
+.PHONY: help bootstrap sync ml kernel superdirt superdirt-check superdirt-foreground lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -45,6 +45,9 @@ kernel: ## Install the project .venv Jupyter kernel and pin notebooks to it
 
 superdirt: ## Start local SuperDirt for notebook OSC audition
 	$(UV) run python scripts/start_superdirt.py --host $(SUPERDIRT_HOST) --port $(SUPERDIRT_PORT) --bind-address $(SUPERDIRT_BIND) --wait-seconds $(SUPERDIRT_WAIT)
+
+superdirt-check: ## Check local SuperCollider/SuperDirt launch prerequisites
+	$(UV) run python scripts/start_superdirt.py --host $(SUPERDIRT_HOST) --port $(SUPERDIRT_PORT) --bind-address $(SUPERDIRT_BIND) --check
 
 superdirt-foreground: ## Run SuperDirt launcher in the foreground for debugging
 	$(UV) run python scripts/start_superdirt.py --host $(SUPERDIRT_HOST) --port $(SUPERDIRT_PORT) --bind-address $(SUPERDIRT_BIND) --foreground

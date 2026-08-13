@@ -49,7 +49,13 @@ music DSL -> Phrase IR -> OSC /dirt/play events -> SuperDirt
 ```
 
 `make lab` runs `make superdirt` first. Set `SCLANG=/path/to/sclang` if SuperCollider is not on
-`PATH`, or run `make superdirt-foreground` to debug the SuperDirt startup script directly.
+`PATH`, run `make superdirt-check` to verify the local executable lookup, or run
+`make superdirt-foreground` to debug the SuperDirt startup script directly. On Windows with
+Chocolatey, install the audio dependencies from an Administrator PowerShell:
+
+```powershell
+choco install SuperCollider superdirt -y
+```
 
 For an explicitly remote Jupyter server:
 

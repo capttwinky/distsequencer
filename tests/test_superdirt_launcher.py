@@ -24,3 +24,19 @@ def test_superdirt_startup_script_uses_configured_port_and_bind_address() -> Non
 def test_superdirt_startup_script_rejects_invalid_port() -> None:
     with pytest.raises(ValueError, match="port must be positive"):
         render_startup_script(port=0, bind_address="127.0.0.1")
+
+
+def test_missing_sclang_message_includes_chocolatey_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _MODULE.shutil,
+        "which",
+        lambda name: "choco.exe" if name == "choco" else None,
+    )
+
+    message = _MODULE._missing_sclang_message()
+
+    assert "sclang was not found" in message
+    assert "choco install SuperCollider superdirt -y" in message
+    assert "SCLANG" in message
