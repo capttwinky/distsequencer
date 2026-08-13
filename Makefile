@@ -28,7 +28,7 @@ PYTEST_FLAGS ?= --basetemp=$(PYTEST_BASETEMP) -p no:cacheprovider
 
 export UV_CACHE_DIR SUPERDIRT_HOST SUPERDIRT_PORT JUPYTER_RUNTIME_DIR JUPYTER_CONFIG_DIR JUPYTER_DATA_DIR
 
-.PHONY: help bootstrap sync ml kernel superdirt superdirt-check superdirt-foreground lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
+.PHONY: help bootstrap sync ml kernel superdirt superdirt-check superdirt-foreground lab lab-server lab-remote sim demo benchmark pki manifest docs-api release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -77,6 +77,9 @@ pki: ## Create local development CA and node certificate
 
 manifest: ## Write a physical deployment manifest
 	$(UV) run distsequencer manifest
+
+docs-api: ## Generate Markdown API reference from source docstrings
+	$(UV) run python scripts/generate_api_docs.py
 
 release-readiness-check: ## Verify release readiness docs and static release assets exist
 	$(UV) run python scripts/release_readiness_check.py

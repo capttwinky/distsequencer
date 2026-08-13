@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 REQUIRED_FILES = (
+    "docs/system-design.md",
+    "docs/api-reference.md",
     "docs/release-readiness.md",
+    "scripts/generate_api_docs.py",
     "Dockerfile",
     ".dockerignore",
     ".github/workflows/ci.yml",

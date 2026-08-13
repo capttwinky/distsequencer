@@ -5,6 +5,12 @@ working tree is clean and the release branch is `main`.
 
 ## Quality Gates
 
+Refresh generated API documentation before running the full local check:
+
+```bash
+make docs-api
+```
+
 Run the full local check before building artifacts:
 
 ```bash

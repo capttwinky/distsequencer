@@ -48,6 +48,9 @@ direct SuperDirt OSC performance path:
 music DSL -> Phrase IR -> OSC /dirt/play events -> SuperDirt
 ```
 
+Read `docs/system-design.md` alongside the lab for the end-to-end component map and source
+documentation workflow.
+
 `make lab` runs `make superdirt` first. Set `SCLANG=/path/to/sclang` if SuperCollider is not on
 `PATH`, run `make superdirt-check` to verify the local executable lookup, or run
 `make superdirt-foreground` to debug the SuperDirt startup script directly. On Windows with
@@ -153,6 +156,7 @@ src/distributed_sequencer/
 
 ```bash
 make format
+make docs-api
 make check
 make build
 ```
