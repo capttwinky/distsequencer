@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import wave
 from io import BytesIO
 from urllib.parse import unquote
@@ -11,16 +12,64 @@ from distributed_sequencer.adapters.superdirt import SuperDirtOscBackend
 from distributed_sequencer.application.lab import (
     NodeSpec,
     ReferencePerformanceLab,
+    dashboard_tables,
     parse_music_dsl,
+    render_dashboard_html,
+    try_fetch_daemon_snapshot,
 )
+from distributed_sequencer.domain.music import MusicalEvent, Phrase
+from distributed_sequencer.domain.state import CompositionContext
 
 DSL = """
 performance title="Notebook Mesh" tempo=132
+composition backend=ml adapter=MidiGPTCompositionAdapter model=.models/midigpt.pt runtime=torch
+section id=intro bars=4 repeats=2
+motif id=hook intervals=0,3,7 rhythm=12,12,24
 part id=bass root=36 density=0.75 bars=1 jitter=4
-part id=lead root=60 density=1.0 bars=1 jitter=7
+part id=lead root=60 density=1.0 bars=1 jitter=7 motif=hook
+lane id=lead-density part=lead density=1.25 mutate=0.2
+route part=bass target=superdirt sound=bd orbit=3 channel=0 gain=0.72
+route part=lead target=superdirt sound=superpiano orbit=4 channel=1 gain=0.5
 node id=node-bass roles=bass
 node id=node-lead roles=lead,bass learned=true
+profile node=node-lead device=ThinkPad location=studio latency=12 cert=n.crt key=n.key ca=ca.crt
 """
+
+
+class FakeCompositionModel:
+    async def generate_candidates(
+        self,
+        context: CompositionContext,
+        *,
+        count: int,
+    ) -> tuple[Phrase, ...]:
+        del count
+        return (
+            Phrase(
+                phrase_id=f"{context.role}-fake",
+                role=context.role,
+                events=(
+                    MusicalEvent(
+                        onset_tick=0,
+                        pitch=context.root_pitch,
+                        duration_ticks=12,
+                    ),
+                    MusicalEvent(
+                        onset_tick=24,
+                        pitch=context.root_pitch + 5,
+                        duration_ticks=12,
+                    ),
+                    MusicalEvent(
+                        onset_tick=48,
+                        pitch=context.root_pitch + 10,
+                        duration_ticks=12,
+                    ),
+                ),
+                bars=context.bars,
+                beats_per_bar=context.beats_per_bar,
+                ticks_per_beat=context.ticks_per_beat,
+            ),
+        )
 
 
 def test_music_dsl_parses_score_parts_and_nodes() -> None:
@@ -31,6 +80,12 @@ def test_music_dsl_parses_score_parts_and_nodes() -> None:
     assert score.part_ids() == ("bass", "lead")
     assert score.nodes[1].roles == ("lead", "bass")
     assert score.nodes[1].learned_variation
+    assert score.composition_backend.adapter == "MidiGPTCompositionAdapter"
+    assert score.form[0].section_id == "intro"
+    assert score.motifs[0].intervals == (0, 3, 7)
+    assert score.probability_lanes[0].density == 1.25
+    assert score.routes[1].sound == "superpiano"
+    assert score.physical_profiles[0].pki_key_path == "n.key"
 
 
 @pytest.mark.asyncio
@@ -45,6 +100,7 @@ async def test_reference_lab_prepares_performance_and_dashboard() -> None:
     assert dashboard.transport_state == "playing"
     assert len(dashboard.assignments) == 2
     assert len(dashboard.readiness) == 2
+    assert "Assignments" in lab.dashboard_html()
 
 
 @pytest.mark.asyncio
@@ -75,8 +131,8 @@ async def test_reference_lab_exports_strudel_repl_url() -> None:
     assert url.startswith("https://strudel.cc/#")
     assert "setcps(" in code
     assert "stack(" in code
-    assert '.sound("pulse")' in code
-    assert '.sound("saw")' in code
+    assert '.sound("bd")' in code
+    assert '.sound("superpiano")' in code
     assert "iframe" in lab.strudel_iframe()
 
 
@@ -89,9 +145,79 @@ async def test_reference_lab_previews_superdirt_osc_events() -> None:
     rows = lab.superdirt_table()
 
     assert len(events) == len(rows)
-    assert {row["sound"] for row in rows} == {"imp", "psin"}
-    assert {row["orbit"] for row in rows} == {0, 1}
+    assert {row["sound"] for row in rows} == {"bd", "superpiano"}
+    assert {row["orbit"] for row in rows} == {3, 4}
     assert all(row["cycle"] >= 0 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_reference_lab_applies_motif_probability_lane_and_model_adapter() -> None:
+    lab = ReferencePerformanceLab.from_dsl(DSL, composition_model=FakeCompositionModel())
+
+    await lab.prepare_performance()
+    lead = lab.prepared_phrases["lead"]
+    blueprint = lab.score_blueprint_table()
+    backend = lab.composition_backend_table()
+
+    assert [event.pitch for event in lead.events] == [60, 63, 67]
+    assert [event.onset_tick for event in lead.events] == [0, 12, 24]
+    assert next(row for row in blueprint if row["part_id"] == "lead")["density"] == 1.25
+    assert backend[0]["adapter"] == "MidiGPTCompositionAdapter"
+
+
+def test_dashboard_tables_normalize_live_daemon_snapshot() -> None:
+    live = {
+        "status": "ready",
+        "transport_epoch": 2,
+        "transport_state": "playing",
+        "current_bar": 9,
+        "assignments": {
+            "lead": {
+                "part_id": "lead",
+                "node_id": "node-lead",
+                "assignment_generation": 3,
+            }
+        },
+        "readiness": {
+            "node-lead:lead": {
+                "part_id": "lead",
+                "node_id": "node-lead",
+                "ready_through_bar": 12,
+            }
+        },
+    }
+
+    tables = dashboard_tables(live)
+    html = render_dashboard_html(live)
+
+    assert tables["assignments"][0]["node_id"] == "node-lead"
+    assert tables["readiness"][0]["ready_through_bar"] == 12
+    assert "Live Coordinator Snapshot" in html
+    assert "node-lead" in html
+
+
+def test_try_fetch_daemon_snapshot_reads_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def read(self) -> bytes:
+            return json.dumps({"status": "ready", "transport_epoch": 7}).encode("utf-8")
+
+    def fake_urlopen(url: str, *, timeout: float) -> FakeResponse:
+        assert url == "http://daemon/snapshot"
+        assert timeout == 0.5
+        return FakeResponse()
+
+    monkeypatch.setattr("distributed_sequencer.application.lab.urlopen", fake_urlopen)
+
+    assert (
+        try_fetch_daemon_snapshot("http://daemon/snapshot", timeout_seconds=0.5)["transport_epoch"]
+        == 7
+    )
 
 
 @pytest.mark.asyncio

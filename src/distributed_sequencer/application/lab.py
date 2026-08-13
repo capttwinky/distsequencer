@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import shlex
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field, replace
+from html import escape
 from pathlib import Path
 from typing import Self
+from urllib.error import URLError
 from urllib.parse import quote
+from urllib.request import urlopen
 
 from distributed_sequencer.adapters.superdirt import (
     DirtEvent,
@@ -20,6 +25,8 @@ from distributed_sequencer.adapters.synth import RecordingSynth
 from distributed_sequencer.application.audio import render_phrases_wav
 from distributed_sequencer.application.composition import (
     CompositionEngine,
+    CompositionModel,
+    Critic,
     DensityCritic,
     ProceduralCompositionModel,
     RegisterCritic,
@@ -28,7 +35,7 @@ from distributed_sequencer.application.coordinator import Coordinator
 from distributed_sequencer.application.node import SequencerNode
 from distributed_sequencer.application.scheduler import Scheduler
 from distributed_sequencer.application.variation import VariationEngine
-from distributed_sequencer.domain.music import Phrase
+from distributed_sequencer.domain.music import MusicalEvent, Phrase
 from distributed_sequencer.domain.state import (
     Assignment,
     CompositionContext,
@@ -40,6 +47,7 @@ from distributed_sequencer.infrastructure.clock import AdvancingClock
 from distributed_sequencer.infrastructure.messaging import InMemoryBus
 
 _STRUDEL_ORIGIN = "https://strudel.cc"
+_DEFAULT_CRITICS = (DensityCritic(), RegisterCritic())
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +55,7 @@ class ScorePart:
     part_id: str
     root_pitch: int
     density: float
+    motif_id: str | None = None
     bars: int = 1
     beats_per_bar: int = 4
     ticks_per_beat: int = 24
@@ -73,6 +82,60 @@ class ScorePart:
 
 
 @dataclass(frozen=True, slots=True)
+class FormSection:
+    section_id: str
+    bars: int
+    repeats: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class MotifSpec:
+    motif_id: str
+    intervals: tuple[int, ...]
+    rhythm_ticks: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ProbabilityLane:
+    lane_id: str
+    part_id: str
+    density: float
+    mutate: float = 0.0
+
+
+_EMPTY_LANE = ProbabilityLane("none", "", 0.0)
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceRoute:
+    part_id: str
+    target: str = "superdirt"
+    sound: str | None = None
+    orbit: int | None = None
+    channel: int = 0
+    gain: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalNodeProfile:
+    node_id: str
+    device_model: str = ""
+    location: str = ""
+    latency_ms: float = 0.0
+    pki_cert_path: str | None = None
+    pki_key_path: str | None = None
+    pki_ca_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompositionBackendSpec:
+    backend: str = "procedural"
+    adapter: str | None = None
+    model_path: str | None = None
+    runtime_module: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NodeSpec:
     node_id: str
     roles: tuple[str, ...]
@@ -94,12 +157,32 @@ class PerformanceScore:
     tempo_bpm: float
     parts: tuple[ScorePart, ...]
     nodes: tuple[NodeSpec, ...] = ()
+    form: tuple[FormSection, ...] = ()
+    motifs: tuple[MotifSpec, ...] = ()
+    probability_lanes: tuple[ProbabilityLane, ...] = ()
+    routes: tuple[DeviceRoute, ...] = ()
+    physical_profiles: tuple[PhysicalNodeProfile, ...] = ()
+    composition_backend: CompositionBackendSpec = field(default_factory=CompositionBackendSpec)
 
     def part_ids(self) -> tuple[str, ...]:
         return tuple(part.part_id for part in self.parts)
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    def motif_for_part(self, part: ScorePart) -> MotifSpec | None:
+        if part.motif_id is None:
+            return None
+        return next((motif for motif in self.motifs if motif.motif_id == part.motif_id), None)
+
+    def probability_lane_for_part(self, part_id: str) -> ProbabilityLane | None:
+        return next(
+            (lane for lane in self.probability_lanes if lane.part_id == part_id),
+            None,
+        )
+
+    def route_for_part(self, part_id: str) -> DeviceRoute | None:
+        return next((route for route in self.routes if route.part_id == part_id), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,10 +222,36 @@ class DashboardSnapshot:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class _ScoreAwareCompositionModel:
+    model: CompositionModel
+    score: PerformanceScore
+
+    async def generate_candidates(
+        self,
+        context: CompositionContext,
+        *,
+        count: int,
+    ) -> tuple[Phrase, ...]:
+        candidates = await self.model.generate_candidates(context, count=count)
+        part = next(
+            (score_part for score_part in self.score.parts if score_part.part_id == context.role),
+            None,
+        )
+        if part is None:
+            return candidates
+        motif = self.score.motif_for_part(part)
+        if motif is None:
+            return candidates
+        return tuple(_apply_motif(candidate, context, motif) for candidate in candidates)
+
+
 @dataclass(slots=True)
 class ReferencePerformanceLab:
     score: PerformanceScore
     seed: int = 1
+    composition_model: CompositionModel | None = None
+    critics: tuple[Critic, ...] = _DEFAULT_CRITICS
     bus: InMemoryBus = field(default_factory=InMemoryBus)
     composition: CompositionEngine = field(init=False)
     coordinator: Coordinator = field(init=False)
@@ -151,9 +260,10 @@ class ReferencePerformanceLab:
     prepared_phrases: dict[str, Phrase] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        base_model = self.composition_model or ProceduralCompositionModel(seed=self.seed)
         self.composition = CompositionEngine(
-            ProceduralCompositionModel(seed=self.seed),
-            critics=(DensityCritic(), RegisterCritic()),
+            _ScoreAwareCompositionModel(base_model, self.score),
+            critics=self.critics,
         )
         self.coordinator = Coordinator(
             composition=self.composition,
@@ -165,8 +275,20 @@ class ReferencePerformanceLab:
             self.add_node(node)
 
     @classmethod
-    def from_dsl(cls, text: str, *, seed: int = 1) -> Self:
-        return cls(score=parse_music_dsl(text), seed=seed)
+    def from_dsl(
+        cls,
+        text: str,
+        *,
+        seed: int = 1,
+        composition_model: CompositionModel | None = None,
+        critics: tuple[Critic, ...] = _DEFAULT_CRITICS,
+    ) -> Self:
+        return cls(
+            score=parse_music_dsl(text),
+            seed=seed,
+            composition_model=composition_model,
+            critics=critics,
+        )
 
     def add_node(self, node: NodeSpec | str, roles: tuple[str, ...] = ()) -> SequencerNode:
         spec = node if isinstance(node, NodeSpec) else NodeSpec(node, roles)
@@ -189,7 +311,10 @@ class ReferencePerformanceLab:
         self.coordinator.start_transport()
         assignments: list[Assignment] = []
         for part in self.score.parts:
-            assignment = await self.coordinator.compose_and_assign(part.context(), part.policy())
+            assignment = await self.coordinator.compose_and_assign(
+                self._composition_context(part),
+                self._variation_policy(part),
+            )
             assignments.append(assignment)
             self.prepared_phrases[assignment.part_id or assignment.phrase.role] = await self.nodes[
                 assignment.node_id
@@ -211,8 +336,8 @@ class ReferencePerformanceLab:
         await asyncio.sleep(0)
         part = self._score_part(part_id)
         assignment = await self.coordinator.compose_and_assign(
-            part.context(),
-            part.policy(),
+            self._composition_context(part),
+            self._variation_policy(part),
             node_id=node_id,
         )
         await receive
@@ -236,6 +361,31 @@ class ReferencePerformanceLab:
             readiness=tuple(_ready_row(ready) for ready in self.coordinator.readiness.values()),
         )
 
+    def dashboard_tables(
+        self,
+        snapshot: DashboardSnapshot | Mapping[str, object] | None = None,
+    ) -> dict[str, tuple[dict[str, object], ...]]:
+        """Return stable dashboard tables for local or daemon `/snapshot` data."""
+        source = self.dashboard() if snapshot is None else snapshot
+        return dashboard_tables(source)
+
+    def dashboard_html(
+        self,
+        snapshot: DashboardSnapshot | Mapping[str, object] | None = None,
+    ) -> str:
+        """Render local or daemon snapshot state as notebook-friendly HTML."""
+        source = self.dashboard() if snapshot is None else snapshot
+        return render_dashboard_html(source)
+
+    def fetch_daemon_snapshot(
+        self,
+        url: str = "http://127.0.0.1:8081/snapshot",
+        *,
+        timeout_seconds: float = 2.0,
+    ) -> Mapping[str, object]:
+        """Fetch a live coordinator daemon `/snapshot` response."""
+        return fetch_daemon_snapshot(url, timeout_seconds=timeout_seconds)
+
     def render_audio(self, *, sample_rate: int = 44_100) -> bytes:
         """Render the current prepared performance as a stereo WAV mixdown."""
         return render_phrases_wav(
@@ -256,13 +406,17 @@ class ReferencePerformanceLab:
         phrases = self._prepared_phrase_list()
         events: list[DirtEvent] = []
         for index, phrase in enumerate(phrases):
+            route = self._route_for_part(phrase.role)
+            sound = route.sound if route.sound is not None else default_superdirt_sound(phrase)
+            orbit = route.orbit if route.orbit is not None else index
+            gain = route.gain if route.gain is not None else default_superdirt_gain(phrase)
             events.extend(
                 phrase_to_dirt_events(
                     phrase,
                     tempo_bpm=self.score.tempo_bpm,
-                    sound=default_superdirt_sound(phrase),
-                    orbit=index,
-                    gain=default_superdirt_gain(phrase),
+                    sound=sound,
+                    orbit=orbit,
+                    gain=gain,
                     pan=_superdirt_pan(index, len(phrases)),
                 )
             )
@@ -317,8 +471,8 @@ class ReferencePerformanceLab:
         cps = self.score.tempo_bpm / 60.0 / max(1, max(phrase.beats_per_bar for phrase in phrases))
         voices = ",\n".join(
             f'  note("{_strudel_pattern(phrase)}")'
-            f'.sound("{_strudel_sound(phrase)}")'
-            f".gain({_strudel_gain(phrase):.2f})"
+            f'.sound("{self._route_for_part(phrase.role).sound or _strudel_sound(phrase)}")'
+            f".gain({self._strudel_gain_for_phrase(phrase):.2f})"
             f".pan({_strudel_pan(index, len(phrases)):.2f})"
             for index, phrase in enumerate(phrases)
         )
@@ -342,6 +496,32 @@ class ReferencePerformanceLab:
             if part.part_id == part_id:
                 return part
         raise KeyError(f"unknown score part: {part_id}")
+
+    def _composition_context(self, part: ScorePart) -> CompositionContext:
+        lane = self.score.probability_lane_for_part(part.part_id)
+        context = part.context()
+        if lane is None:
+            return context
+        return replace(context, desired_density=lane.density)
+
+    def _variation_policy(self, part: ScorePart) -> VariationPolicy:
+        lane = self.score.probability_lane_for_part(part.part_id)
+        policy = part.policy()
+        if lane is None:
+            return policy
+        return replace(
+            policy,
+            density_variance=max(policy.density_variance, lane.mutate),
+            rhythmic_freedom=max(policy.rhythmic_freedom, lane.mutate),
+            pitch_freedom=max(policy.pitch_freedom, lane.mutate),
+        )
+
+    def _route_for_part(self, part_id: str) -> DeviceRoute:
+        return self.score.route_for_part(part_id) or DeviceRoute(part_id=part_id)
+
+    def _strudel_gain_for_phrase(self, phrase: Phrase) -> float:
+        route = self._route_for_part(phrase.role)
+        return route.gain if route.gain is not None else _strudel_gain(phrase)
 
     def _prepared_phrase_list(self) -> tuple[Phrase, ...]:
         if not self.prepared_phrases:
@@ -379,12 +559,56 @@ class ReferencePerformanceLab:
             for assignment in self.coordinator.desired_assignments.values()
         )
 
+    def score_blueprint_table(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "part_id": part.part_id,
+                "motif_id": part.motif_id or "",
+                "density": self._composition_context(part).desired_density,
+                "mutate": (
+                    self.score.probability_lane_for_part(part.part_id) or _EMPTY_LANE
+                ).mutate,
+                "bars": part.bars,
+                "beats_per_bar": part.beats_per_bar,
+            }
+            for part in self.score.parts
+        )
+
+    def route_table(self) -> tuple[dict[str, object], ...]:
+        return tuple(asdict(route) for route in self.score.routes)
+
+    def physical_profile_table(self) -> tuple[dict[str, object], ...]:
+        return tuple(asdict(profile) for profile in self.score.physical_profiles)
+
+    def composition_backend_table(self) -> tuple[dict[str, object], ...]:
+        spec = self.score.composition_backend
+        adapter = (
+            self.composition_model.__class__.__name__
+            if self.composition_model is not None
+            else "ProceduralCompositionModel"
+        )
+        return (
+            {
+                "backend": spec.backend,
+                "adapter": spec.adapter or adapter,
+                "model_path": spec.model_path or "",
+                "runtime_module": spec.runtime_module or "",
+                "score_contract": "CompositionModel.generate_candidates -> Phrase",
+            },
+        )
+
 
 def parse_music_dsl(text: str) -> PerformanceScore:
     title = "Untitled Performance"
     tempo_bpm = 120.0
     parts: list[ScorePart] = []
     nodes: list[NodeSpec] = []
+    form: list[FormSection] = []
+    motifs: list[MotifSpec] = []
+    lanes: list[ProbabilityLane] = []
+    routes: list[DeviceRoute] = []
+    profiles: list[PhysicalNodeProfile] = []
+    composition_backend = CompositionBackendSpec()
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.split("#", maxsplit=1)[0].strip()
         if not line:
@@ -400,6 +624,7 @@ def parse_music_dsl(text: str) -> PerformanceScore:
                     part_id=_required(fields, "id", line_number),
                     root_pitch=_int(fields.get("root", 60), "root", line_number),
                     density=_float(fields.get("density", 1.0), "density", line_number),
+                    motif_id=_optional(fields, "motif"),
                     bars=_int(fields.get("bars", 1), "bars", line_number),
                     velocity_jitter=_int(fields.get("jitter", 0), "jitter", line_number),
                     timing_jitter_ticks=_int(fields.get("timing", 0), "timing", line_number),
@@ -415,6 +640,82 @@ def parse_music_dsl(text: str) -> PerformanceScore:
                     learned_variation=_bool(fields.get("learned", False), "learned", line_number),
                 )
             )
+        elif command == "section":
+            form.append(
+                FormSection(
+                    section_id=_required(fields, "id", line_number),
+                    bars=_positive_int(fields.get("bars", 1), "bars", line_number),
+                    repeats=_positive_int(fields.get("repeats", 1), "repeats", line_number),
+                )
+            )
+        elif command == "motif":
+            motifs.append(
+                MotifSpec(
+                    motif_id=_required(fields, "id", line_number),
+                    intervals=_int_tuple(_required(fields, "intervals", line_number), line_number),
+                    rhythm_ticks=_positive_int_tuple(
+                        _optional(fields, "rhythm") or "",
+                        line_number,
+                    ),
+                )
+            )
+        elif command == "lane":
+            lanes.append(
+                ProbabilityLane(
+                    lane_id=_required(fields, "id", line_number),
+                    part_id=_required(fields, "part", line_number),
+                    density=_bounded_float(
+                        fields.get("density", 1.0),
+                        "density",
+                        line_number,
+                        lower=0.0,
+                        upper=8.0,
+                    ),
+                    mutate=_bounded_float(
+                        fields.get("mutate", 0.0),
+                        "mutate",
+                        line_number,
+                        lower=0.0,
+                        upper=1.0,
+                    ),
+                )
+            )
+        elif command == "route":
+            routes.append(
+                DeviceRoute(
+                    part_id=_required(fields, "part", line_number),
+                    target=str(fields.get("target", "superdirt")),
+                    sound=_optional(fields, "sound"),
+                    orbit=_optional_int(fields, "orbit", line_number),
+                    channel=_bounded_int(
+                        fields.get("channel", 0),
+                        "channel",
+                        line_number,
+                        lower=0,
+                        upper=15,
+                    ),
+                    gain=_optional_float(fields, "gain", line_number),
+                )
+            )
+        elif command == "profile":
+            profiles.append(
+                PhysicalNodeProfile(
+                    node_id=_required(fields, "node", line_number),
+                    device_model=str(fields.get("device", "")),
+                    location=str(fields.get("location", "")),
+                    latency_ms=_float(fields.get("latency", 0.0), "latency", line_number),
+                    pki_cert_path=_optional(fields, "cert"),
+                    pki_key_path=_optional(fields, "key"),
+                    pki_ca_path=_optional(fields, "ca"),
+                )
+            )
+        elif command == "composition":
+            composition_backend = CompositionBackendSpec(
+                backend=str(fields.get("backend", "procedural")),
+                adapter=_optional(fields, "adapter"),
+                model_path=_optional(fields, "model"),
+                runtime_module=_optional(fields, "runtime"),
+            )
         else:
             raise ValueError(f"line {line_number}: unsupported DSL command {command!r}")
     if not parts:
@@ -424,6 +725,12 @@ def parse_music_dsl(text: str) -> PerformanceScore:
         tempo_bpm=tempo_bpm,
         parts=tuple(parts),
         nodes=tuple(nodes),
+        form=tuple(form),
+        motifs=tuple(motifs),
+        probability_lanes=tuple(lanes),
+        routes=tuple(routes),
+        physical_profiles=tuple(profiles),
+        composition_backend=composition_backend,
     )
 
 
@@ -444,6 +751,13 @@ def _required(fields: dict[str, object], key: str, line_number: int) -> str:
     return value
 
 
+def _optional(fields: dict[str, object], key: str) -> str | None:
+    value = fields.get(key)
+    if value is None:
+        return None
+    return str(value)
+
+
 def _int(value: object, name: str, line_number: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"line {line_number}: {name} must be an integer")
@@ -453,6 +767,33 @@ def _int(value: object, name: str, line_number: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"line {line_number}: {name} must be an integer") from exc
+
+
+def _positive_int(value: object, name: str, line_number: int) -> int:
+    parsed = _int(value, name, line_number)
+    if parsed <= 0:
+        raise ValueError(f"line {line_number}: {name} must be positive")
+    return parsed
+
+
+def _bounded_int(
+    value: object,
+    name: str,
+    line_number: int,
+    *,
+    lower: int,
+    upper: int,
+) -> int:
+    parsed = _int(value, name, line_number)
+    if not lower <= parsed <= upper:
+        raise ValueError(f"line {line_number}: {name} must be in [{lower}, {upper}]")
+    return parsed
+
+
+def _optional_int(fields: dict[str, object], key: str, line_number: int) -> int | None:
+    if key not in fields:
+        return None
+    return _int(fields[key], key, line_number)
 
 
 def _float(value: object, name: str, line_number: int) -> float:
@@ -466,6 +807,26 @@ def _float(value: object, name: str, line_number: int) -> float:
         raise ValueError(f"line {line_number}: {name} must be numeric") from exc
 
 
+def _bounded_float(
+    value: object,
+    name: str,
+    line_number: int,
+    *,
+    lower: float,
+    upper: float,
+) -> float:
+    parsed = _float(value, name, line_number)
+    if not lower <= parsed <= upper:
+        raise ValueError(f"line {line_number}: {name} must be in [{lower}, {upper}]")
+    return parsed
+
+
+def _optional_float(fields: dict[str, object], key: str, line_number: int) -> float | None:
+    if key not in fields:
+        return None
+    return _float(fields[key], key, line_number)
+
+
 def _bool(value: object, name: str, line_number: int) -> bool:
     if isinstance(value, bool):
         return value
@@ -476,6 +837,158 @@ def _bool(value: object, name: str, line_number: int) -> bool:
         if lowered in {"false", "no", "0"}:
             return False
     raise ValueError(f"line {line_number}: {name} must be boolean")
+
+
+def _int_tuple(value: str, line_number: int) -> tuple[int, ...]:
+    if not value:
+        return ()
+    return tuple(_int(token, "list value", line_number) for token in value.split(","))
+
+
+def _positive_int_tuple(value: str, line_number: int) -> tuple[int, ...]:
+    if not value:
+        return ()
+    return tuple(_positive_int(token, "list value", line_number) for token in value.split(","))
+
+
+def _apply_motif(phrase: Phrase, context: CompositionContext, motif: MotifSpec) -> Phrase:
+    if not motif.intervals and not motif.rhythm_ticks:
+        return phrase
+    events: list[MusicalEvent] = []
+    onset = 0
+    for index, event in enumerate(phrase.events):
+        duration = (
+            motif.rhythm_ticks[index % len(motif.rhythm_ticks)]
+            if motif.rhythm_ticks
+            else event.duration_ticks
+        )
+        event_onset = onset if motif.rhythm_ticks else event.onset_tick
+        if event_onset >= phrase.total_ticks:
+            break
+        if motif.intervals:
+            pitch = context.root_pitch + motif.intervals[index % len(motif.intervals)]
+        else:
+            pitch = event.pitch
+        events.append(
+            replace(
+                event,
+                onset_tick=event_onset,
+                pitch=max(0, min(127, pitch)),
+                duration_ticks=max(1, min(duration, phrase.total_ticks - event_onset)),
+            )
+        )
+        onset += duration
+    return replace(phrase, events=tuple(sorted(events)))
+
+
+def fetch_daemon_snapshot(
+    url: str = "http://127.0.0.1:8081/snapshot",
+    *,
+    timeout_seconds: float = 2.0,
+) -> Mapping[str, object]:
+    with urlopen(url, timeout=timeout_seconds) as response:
+        payload = response.read()
+    value = json.loads(payload.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("daemon snapshot response must be a JSON object")
+    return value
+
+
+def try_fetch_daemon_snapshot(
+    url: str = "http://127.0.0.1:8081/snapshot",
+    *,
+    timeout_seconds: float = 2.0,
+) -> Mapping[str, object]:
+    try:
+        return fetch_daemon_snapshot(url, timeout_seconds=timeout_seconds)
+    except (OSError, TimeoutError, URLError, json.JSONDecodeError) as exc:
+        return {"status": "unavailable", "url": url, "error": str(exc)}
+
+
+def dashboard_tables(
+    snapshot: DashboardSnapshot | Mapping[str, object],
+) -> dict[str, tuple[dict[str, object], ...]]:
+    mapping = snapshot.as_dict() if isinstance(snapshot, DashboardSnapshot) else dict(snapshot)
+    return {
+        "assignments": _table_rows(mapping.get("assignments", ())),
+        "readiness": _table_rows(mapping.get("readiness", ())),
+        "nodes": _table_rows(mapping.get("nodes", ())),
+    }
+
+
+def render_dashboard_html(snapshot: DashboardSnapshot | Mapping[str, object]) -> str:
+    mapping = snapshot.as_dict() if isinstance(snapshot, DashboardSnapshot) else dict(snapshot)
+    tables = dashboard_tables(mapping)
+    title = escape(str(mapping.get("title", "Live Coordinator Snapshot")))
+    tempo = escape(str(mapping.get("tempo_bpm", "")))
+    state = escape(str(mapping.get("transport_state", mapping.get("status", "unknown"))))
+    epoch = escape(str(mapping.get("transport_epoch", "")))
+    bar = escape(str(mapping.get("current_bar", "")))
+    return (
+        "<style>"
+        ".ds-dashboard{font-family:Inter,Segoe UI,Arial,sans-serif;color:#1f2328}"
+        ".ds-band{border:1px solid #d0d7de;border-radius:8px;padding:14px;margin:10px 0}"
+        ".ds-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}"
+        ".ds-kpi{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:8px}"
+        ".ds-kpi b{display:block;font-size:12px;color:#57606a;font-weight:600}"
+        ".ds-kpi span{display:block;font-size:18px;margin-top:2px}"
+        ".ds-dashboard table{border-collapse:collapse;width:100%;font-size:13px}"
+        ".ds-dashboard th,.ds-dashboard td{border-bottom:1px solid #d8dee4;"
+        "padding:6px;text-align:left}"
+        ".ds-dashboard th{background:#f6f8fa;color:#57606a;font-weight:600}"
+        ".ds-dashboard h3{font-size:16px;margin:0 0 8px}"
+        "</style>"
+        "<div class='ds-dashboard'>"
+        f"<div class='ds-band'><h3>{title}</h3><div class='ds-kpis'>"
+        f"<div class='ds-kpi'><b>State</b><span>{state}</span></div>"
+        f"<div class='ds-kpi'><b>Tempo</b><span>{tempo}</span></div>"
+        f"<div class='ds-kpi'><b>Epoch</b><span>{epoch}</span></div>"
+        f"<div class='ds-kpi'><b>Bar</b><span>{bar}</span></div>"
+        "</div></div>"
+        f"{_html_table_band('Assignments', tables['assignments'])}"
+        f"{_html_table_band('Readiness', tables['readiness'])}"
+        f"{_html_table_band('Nodes', tables['nodes'])}"
+        "</div>"
+    )
+
+
+def _table_rows(value: object) -> tuple[dict[str, object], ...]:
+    if isinstance(value, Mapping):
+        iterable: Sequence[object] = tuple(value.values())
+    elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        iterable = value
+    else:
+        return ()
+    rows: list[dict[str, object]] = []
+    for row in iterable:
+        if isinstance(row, Mapping):
+            rows.append({str(key): cell for key, cell in row.items()})
+    return tuple(rows)
+
+
+def _html_table_band(title: str, rows: Sequence[Mapping[str, object]]) -> str:
+    if not rows:
+        return f"<div class='ds-band'><h3>{escape(title)}</h3><p>No rows.</p></div>"
+    columns = tuple(dict.fromkeys(column for row in rows for column in row))
+    header = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    body = "".join(
+        "<tr>"
+        + "".join(f"<td>{escape(_cell_text(row.get(column, '')))}</td>" for column in columns)
+        + "</tr>"
+        for row in rows
+    )
+    return (
+        f"<div class='ds-band'><h3>{escape(title)}</h3>"
+        f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>"
+    )
+
+
+def _cell_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Sequence) and not isinstance(value, bytes):
+        return ", ".join(str(item) for item in value)
+    return str(value)
 
 
 def _prepared_part(assignment: Assignment) -> PreparedPart:
