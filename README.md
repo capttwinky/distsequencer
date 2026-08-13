@@ -123,6 +123,20 @@ make docker-build
 make docker-run
 ```
 
+The same Dockerfile works with Podman:
+
+```bash
+make podman-build
+make podman-run
+```
+
+Or select a runtime explicitly:
+
+```bash
+CONTAINER=podman make container-build
+CONTAINER=podman make container-run
+```
+
 The image installs only the base runtime dependencies. It does not include the optional `ml` group,
 JupyterLab, test tools, or generated local artifacts.
 
