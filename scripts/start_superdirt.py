@@ -45,10 +45,14 @@ def main() -> None:
         print("SuperDirt startup will be verified by `make superdirt`.")
         return
 
-    if _pid_running(args.pid_file):
-        print(f"SuperDirt launcher already running from {args.pid_file}")
-        print(f"OSC target: {args.host}:{args.port}")
-        return
+    existing_pid = _running_pid(args.pid_file)
+    if existing_pid is not None:
+        if _log_ready(args.log_file):
+            print(f"SuperDirt launcher already running from {args.pid_file}")
+            print(f"OSC target: {args.host}:{args.port}")
+            return
+        print(f"Replacing unready SuperDirt launcher PID {existing_pid}; see {args.log_file}")
+        _stop_pid(existing_pid)
 
     args.script_file.parent.mkdir(parents=True, exist_ok=True)
     args.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -58,15 +62,16 @@ def main() -> None:
     )
 
     if args.foreground:
-        subprocess.run([sclang, str(args.script_file)], check=True)
+        subprocess.run([sclang, str(args.script_file)], check=True, env=_supercollider_env(sclang))
         return
 
-    log = args.log_file.open("ab")
+    log = args.log_file.open("wb")
     process = subprocess.Popen(
         [sclang, str(args.script_file)],
         stdout=log,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        env=_supercollider_env(sclang),
         creationflags=_creation_flags(),
     )
     args.pid_file.write_text(str(process.pid), encoding="utf-8")
@@ -87,8 +92,12 @@ def _find_sclang() -> str | None:
         Path("C:/Program Files/SuperCollider/sclang.exe"),
         Path("C:/Program Files/SuperCollider-3.14.0/sclang.exe"),
         Path("C:/Program Files/SuperCollider-3.13.0/sclang.exe"),
+        Path("C:/Program Files/SuperCollider-3.12.1/sclang.exe"),
     )
     for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    for candidate in sorted(Path("C:/Program Files").glob("SuperCollider-*/sclang.exe")):
         if candidate.exists():
             return str(candidate)
     return None
@@ -121,13 +130,13 @@ def render_startup_script(*, port: int, bind_address: str) -> str:
     )
 
 
-def _pid_running(pid_file: Path) -> bool:
+def _running_pid(pid_file: Path) -> int | None:
     if not pid_file.exists():
-        return False
+        return None
     try:
         pid = int(pid_file.read_text(encoding="utf-8").strip())
     except ValueError:
-        return False
+        return None
     if sys.platform == "win32":
         result = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}"],
@@ -135,12 +144,38 @@ def _pid_running(pid_file: Path) -> bool:
             check=False,
             text=True,
         )
-        return str(pid) in result.stdout
+        return pid if str(pid) in result.stdout else None
     try:
         os.kill(pid, 0)
     except OSError:
+        return None
+    return pid
+
+
+def _stop_pid(pid: int) -> None:
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=False, capture_output=True)
+        return
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        return
+
+
+def _log_ready(log_file: Path) -> bool:
+    if not log_file.exists():
         return False
-    return True
+    return "DISTSEQUENCER_SUPERDIRT_READY" in log_file.read_text(
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def _supercollider_env(sclang: str) -> dict[str, str]:
+    env = os.environ.copy()
+    supercollider_dir = str(Path(sclang).parent)
+    env["PATH"] = supercollider_dir + os.pathsep + env.get("PATH", "")
+    return env
 
 
 def _creation_flags() -> int:

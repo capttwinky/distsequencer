@@ -40,3 +40,30 @@ def test_missing_sclang_message_includes_chocolatey_hint(
     assert "sclang was not found" in message
     assert "choco install SuperCollider superdirt -y" in message
     assert "SCLANG" in message
+
+
+def test_supercollider_env_adds_sclang_directory_to_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "C:\\Windows\\System32")
+
+    env = _MODULE._supercollider_env("C:\\Program Files\\SuperCollider-3.12.1\\sclang.exe")
+
+    assert env["PATH"].startswith("C:\\Program Files\\SuperCollider-3.12.1")
+    assert "C:\\Windows\\System32" in env["PATH"]
+
+
+def test_find_sclang_checks_versioned_supercollider_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = "C:/Program Files/SuperCollider-3.12.1/sclang.exe"
+    monkeypatch.delenv("SCLANG", raising=False)
+    monkeypatch.setattr(_MODULE.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        _MODULE.Path,
+        "exists",
+        lambda path: str(path).replace("\\", "/") == expected,
+    )
+    monkeypatch.setattr(_MODULE.Path, "glob", lambda *_args: iter(()))
+
+    assert _MODULE._find_sclang().replace("\\", "/") == expected

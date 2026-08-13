@@ -6,6 +6,9 @@ UV_CACHE_DIR ?= $(CURDIR)/.uv-cache
 PYTHON_VERSION ?= 3.12
 JUPYTER_IP ?= 127.0.0.1
 JUPYTER_PORT ?= 8888
+JUPYTER_RUNTIME_DIR ?= $(CURDIR)/.tmp/jupyter/runtime
+JUPYTER_CONFIG_DIR ?= $(CURDIR)/.tmp/jupyter/config
+JUPYTER_DATA_DIR ?= $(CURDIR)/.tmp/jupyter/data
 SUPERDIRT_HOST ?= 127.0.0.1
 SUPERDIRT_PORT ?= 57120
 SUPERDIRT_BIND ?= 0.0.0.0
@@ -23,7 +26,7 @@ PYTEST_RUN_ID ?= $(shell python -c "import uuid; print(uuid.uuid4().hex)")
 PYTEST_BASETEMP ?= $(CURDIR)/.tmp/pytest-basetemp-$(PYTEST_RUN_ID)
 PYTEST_FLAGS ?= --basetemp=$(PYTEST_BASETEMP) -p no:cacheprovider
 
-export UV_CACHE_DIR SUPERDIRT_HOST SUPERDIRT_PORT
+export UV_CACHE_DIR SUPERDIRT_HOST SUPERDIRT_PORT JUPYTER_RUNTIME_DIR JUPYTER_CONFIG_DIR JUPYTER_DATA_DIR
 
 .PHONY: help bootstrap sync ml kernel superdirt superdirt-check superdirt-foreground lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
@@ -53,6 +56,7 @@ superdirt-foreground: ## Run SuperDirt launcher in the foreground for debugging
 	$(UV) run python scripts/start_superdirt.py --host $(SUPERDIRT_HOST) --port $(SUPERDIRT_PORT) --bind-address $(SUPERDIRT_BIND) --foreground
 
 lab: kernel superdirt ## Launch JupyterLab locally with SuperDirt OSC target
+	$(UV) run python -c "import os, pathlib; [pathlib.Path(os.environ[name]).mkdir(parents=True, exist_ok=True) for name in ('JUPYTER_RUNTIME_DIR', 'JUPYTER_CONFIG_DIR', 'JUPYTER_DATA_DIR')]"
 	$(UV) run jupyter lab --ip=$(JUPYTER_IP) --port=$(JUPYTER_PORT) --no-browser --ServerApp.root_dir=.
 
 lab-server: ## Launch JupyterLab on all interfaces (token authentication remains enabled)

@@ -57,6 +57,11 @@ Chocolatey, install the audio dependencies from an Administrator PowerShell:
 choco install SuperCollider superdirt -y
 ```
 
+If Jupyter reports `Kernel does not exist` after restarting the lab, close the stale notebook tab and
+reopen `notebooks/00_architecture_playground.ipynb` from the current JupyterLab file browser.
+`make lab` uses repo-local Jupyter runtime directories under `.tmp/jupyter` to avoid user-profile
+runtime permission issues.
+
 For an explicitly remote Jupyter server:
 
 ```bash
