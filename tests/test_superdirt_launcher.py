@@ -19,6 +19,7 @@ def test_superdirt_startup_script_uses_configured_port_and_bind_address() -> Non
 
     assert '~dirt.start(57121, [0, 0], NetAddr("127.0.0.1"));' in script
     assert "DISTSEQUENCER_SUPERDIRT_READY" in script
+    assert "DISTSEQUENCER_DIRT_EVENT" in script
 
 
 def test_superdirt_startup_script_rejects_invalid_port() -> None:

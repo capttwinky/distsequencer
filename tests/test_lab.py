@@ -89,7 +89,7 @@ async def test_reference_lab_previews_superdirt_osc_events() -> None:
     rows = lab.superdirt_table()
 
     assert len(events) == len(rows)
-    assert {row["sound"] for row in rows} == {"super808", "superpiano"}
+    assert {row["sound"] for row in rows} == {"imp", "psin"}
     assert {row["orbit"] for row in rows} == {0, 1}
     assert all(row["cycle"] >= 0 for row in rows)
 
@@ -119,6 +119,35 @@ async def test_reference_lab_sends_prepared_performance_to_superdirt(
     assert sent == [events]
     assert targets == [("192.0.2.20", 57121)]
     assert events == lab.superdirt_events()
+
+
+@pytest.mark.asyncio
+async def test_reference_lab_streams_prepared_performance_to_superdirt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    streamed: list[tuple[object, int, float]] = []
+
+    async def fake_stream_events(
+        self: SuperDirtOscBackend,
+        events: object,
+        *,
+        cycles: int,
+        lookahead_seconds: float,
+    ) -> object:
+        del self
+        streamed.append((events, cycles, lookahead_seconds))
+        return events
+
+    monkeypatch.setattr(
+        "distributed_sequencer.adapters.superdirt.SuperDirtOscBackend.stream_events",
+        fake_stream_events,
+    )
+    lab = ReferencePerformanceLab.from_dsl(DSL, seed=17)
+    await lab.prepare_performance()
+
+    events = await lab.stream_superdirt(cycles=3, lookahead_seconds=0.05)
+
+    assert streamed == [(events, 3, 0.05)]
 
 
 @pytest.mark.asyncio

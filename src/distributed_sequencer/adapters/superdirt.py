@@ -39,6 +39,8 @@ class DirtEvent:
             self.orbit,
             "s",
             self.sound,
+            "n",
+            self.note,
             "note",
             self.note,
             "velocity",
@@ -54,6 +56,20 @@ class DirtEvent:
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
+    def with_cycle_offset(self, offset: int) -> DirtEvent:
+        return DirtEvent(
+            cps=self.cps,
+            cycle=self.cycle + offset,
+            delta=self.delta,
+            orbit=self.orbit,
+            sound=self.sound,
+            note=self.note,
+            velocity=self.velocity,
+            gain=self.gain,
+            pan=self.pan,
+            sustain=self.sustain,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SuperDirtOscBackend:
@@ -65,7 +81,7 @@ class SuperDirtOscBackend:
 
     host: str = "127.0.0.1"
     port: int = 57120
-    latency_seconds: float = 0.2
+    latency_seconds: float = 0.35
 
     async def send_phrase(
         self,
@@ -120,6 +136,40 @@ class SuperDirtOscBackend:
                 sock.sendto(encode_dirt_bundle(event, timestamp=timestamp), (self.host, self.port))
                 await asyncio.sleep(0)
 
+    async def stream_events(
+        self,
+        events: Sequence[DirtEvent],
+        *,
+        cycles: int = 4,
+        lookahead_seconds: float = 0.25,
+    ) -> tuple[DirtEvent, ...]:
+        """Pace repeated `/dirt/play` events into SuperDirt in realtime."""
+        if cycles <= 0:
+            raise ValueError("cycles must be positive")
+        if lookahead_seconds < 0:
+            raise ValueError("lookahead_seconds must be non-negative")
+        if not events:
+            return ()
+
+        cycle_duration = 1.0 / events[0].cps
+        start_time = time.time() + self.latency_seconds
+        sent: list[DirtEvent] = []
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for cycle_index in range(cycles):
+                for event in sorted(events, key=lambda item: item.cycle):
+                    streamed = event.with_cycle_offset(cycle_index)
+                    timestamp = start_time + streamed.cycle * cycle_duration
+                    delay = timestamp - lookahead_seconds - time.time()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    sock.sendto(
+                        encode_dirt_bundle(streamed, timestamp=timestamp),
+                        (self.host, self.port),
+                    )
+                    sent.append(streamed)
+                    await asyncio.sleep(0)
+        return tuple(sent)
+
 
 def phrase_to_dirt_events(
     phrase: Phrase,
@@ -166,8 +216,8 @@ def encode_dirt_message(event: DirtEvent) -> bytes:
 
 def default_superdirt_sound(phrase: Phrase) -> str:
     if phrase.role.lower() in {"bass", "sub", "low"}:
-        return "super808"
-    return "superpiano"
+        return "imp"
+    return "psin"
 
 
 def default_superdirt_gain(phrase: Phrase) -> float:

@@ -3,14 +3,20 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-STARTUP_SCRIPT = """
+STARTUP_SCRIPT = r"""
 s.waitForBoot {
     ~dirt = SuperDirt(2, s);
+    ~dirt.receiveAction = { |event|
+        ("DISTSEQUENCER_DIRT_EVENT orbit=" ++ (event[\orbit] ? 0).asString
+            ++ " s=" ++ (event[\s] ? "").asString
+            ++ " note=" ++ (event[\note] ? "").asString).postln;
+    };
     ~dirt.loadSoundFiles;
     s.sync;
     ~dirt.start($PORT, [0, 0], NetAddr("$BIND_ADDRESS"));
@@ -53,6 +59,10 @@ def main() -> None:
             return
         print(f"Replacing unready SuperDirt launcher PID {existing_pid}; see {args.log_file}")
         _stop_pid(existing_pid)
+    if _udp_port_bound(args.host, args.port):
+        print(f"SuperDirt OSC port already bound at {args.host}:{args.port}")
+        print("Using existing listener.")
+        return
 
     args.script_file.parent.mkdir(parents=True, exist_ok=True)
     args.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +186,15 @@ def _supercollider_env(sclang: str) -> dict[str, str]:
     supercollider_dir = str(Path(sclang).parent)
     env["PATH"] = supercollider_dir + os.pathsep + env.get("PATH", "")
     return env
+
+
+def _udp_port_bound(host: str, port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.bind((host, port))
+    except OSError:
+        return True
+    return False
 
 
 def _creation_flags() -> int:

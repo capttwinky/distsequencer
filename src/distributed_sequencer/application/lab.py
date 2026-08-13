@@ -289,6 +289,28 @@ class ReferencePerformanceLab:
         await backend.send_events(events)
         return events
 
+    async def stream_superdirt(
+        self,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        cycles: int = 8,
+        latency_seconds: float = 0.35,
+        lookahead_seconds: float = 0.25,
+    ) -> tuple[DirtEvent, ...]:
+        """Stream the prepared performance to SuperDirt for a fixed number of cycles."""
+        events = self.superdirt_events()
+        backend = SuperDirtOscBackend(
+            host=host or os.environ.get("SUPERDIRT_HOST", "127.0.0.1"),
+            port=port or int(os.environ.get("SUPERDIRT_PORT", "57120")),
+            latency_seconds=latency_seconds,
+        )
+        return await backend.stream_events(
+            events,
+            cycles=cycles,
+            lookahead_seconds=lookahead_seconds,
+        )
+
     def strudel_code(self) -> str:
         """Convert the current prepared performance into editable Strudel pattern code."""
         phrases = self._prepared_phrase_list()
