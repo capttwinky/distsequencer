@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import shlex
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -10,6 +11,7 @@ from urllib.parse import quote
 
 from distributed_sequencer.adapters.superdirt import (
     DirtEvent,
+    SuperDirtOscBackend,
     default_superdirt_gain,
     default_superdirt_sound,
     phrase_to_dirt_events,
@@ -269,6 +271,23 @@ class ReferencePerformanceLab:
     def superdirt_table(self) -> tuple[dict[str, object], ...]:
         """Return a notebook-friendly preview of the generated SuperDirt OSC events."""
         return tuple(event.as_dict() for event in self.superdirt_events())
+
+    async def send_superdirt(
+        self,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        latency_seconds: float = 0.2,
+    ) -> tuple[DirtEvent, ...]:
+        """Send the prepared performance to a running SuperDirt OSC target."""
+        events = self.superdirt_events()
+        backend = SuperDirtOscBackend(
+            host=host or os.environ.get("SUPERDIRT_HOST", "127.0.0.1"),
+            port=port or int(os.environ.get("SUPERDIRT_PORT", "57120")),
+            latency_seconds=latency_seconds,
+        )
+        await backend.send_events(events)
+        return events
 
     def strudel_code(self) -> str:
         """Convert the current prepared performance into editable Strudel pattern code."""

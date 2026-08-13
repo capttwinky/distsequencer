@@ -7,6 +7,7 @@ from urllib.parse import unquote
 
 import pytest
 
+from distributed_sequencer.adapters.superdirt import SuperDirtOscBackend
 from distributed_sequencer.application.lab import (
     NodeSpec,
     ReferencePerformanceLab,
@@ -91,6 +92,33 @@ async def test_reference_lab_previews_superdirt_osc_events() -> None:
     assert {row["sound"] for row in rows} == {"super808", "superpiano"}
     assert {row["orbit"] for row in rows} == {0, 1}
     assert all(row["cycle"] >= 0 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_reference_lab_sends_prepared_performance_to_superdirt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[object] = []
+    targets: list[tuple[str, int]] = []
+
+    async def fake_send_events(self: SuperDirtOscBackend, events: object) -> None:
+        targets.append((self.host, self.port))
+        sent.append(events)
+
+    monkeypatch.setenv("SUPERDIRT_HOST", "192.0.2.20")
+    monkeypatch.setenv("SUPERDIRT_PORT", "57121")
+    monkeypatch.setattr(
+        "distributed_sequencer.adapters.superdirt.SuperDirtOscBackend.send_events",
+        fake_send_events,
+    )
+    lab = ReferencePerformanceLab.from_dsl(DSL, seed=16)
+    await lab.prepare_performance()
+
+    events = await lab.send_superdirt()
+
+    assert sent == [events]
+    assert targets == [("192.0.2.20", 57121)]
+    assert events == lab.superdirt_events()
 
 
 @pytest.mark.asyncio

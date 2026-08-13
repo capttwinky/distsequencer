@@ -21,6 +21,7 @@ composition intent/state
 - `uv`
 - `make`
 - Git for promotion/release targets
+- SuperCollider with the SuperDirt Quark for `make lab` OSC audition
 - optional `gh` CLI for `make pr` / `make promote`
 
 ## Start Here
@@ -41,11 +42,14 @@ make lab
 The notebook `notebooks/00_architecture_playground.ipynb` is a full reference lab covering the
 music DSL, mesh membership, performance score preparation, performance management, and dashboard
 snapshots. It includes browser audition through generated Strudel code, a local WAV fallback, and a
-direct SuperDirt OSC preview path:
+direct SuperDirt OSC performance path:
 
 ```text
 music DSL -> Phrase IR -> OSC /dirt/play events -> SuperDirt
 ```
+
+`make lab` runs `make superdirt` first. Set `SCLANG=/path/to/sclang` if SuperCollider is not on
+`PATH`, or run `make superdirt-foreground` to debug the SuperDirt startup script directly.
 
 For an explicitly remote Jupyter server:
 

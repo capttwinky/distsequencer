@@ -6,6 +6,10 @@ UV_CACHE_DIR ?= $(CURDIR)/.uv-cache
 PYTHON_VERSION ?= 3.12
 JUPYTER_IP ?= 127.0.0.1
 JUPYTER_PORT ?= 8888
+SUPERDIRT_HOST ?= 127.0.0.1
+SUPERDIRT_PORT ?= 57120
+SUPERDIRT_BIND ?= 0.0.0.0
+SUPERDIRT_WAIT ?= 20
 GIT_REMOTE ?= origin
 VERSION ?=
 IMAGE ?= distsequencer:latest
@@ -19,9 +23,9 @@ PYTEST_RUN_ID ?= $(shell python -c "import uuid; print(uuid.uuid4().hex)")
 PYTEST_BASETEMP ?= $(CURDIR)/.tmp/pytest-basetemp-$(PYTEST_RUN_ID)
 PYTEST_FLAGS ?= --basetemp=$(PYTEST_BASETEMP) -p no:cacheprovider
 
-export UV_CACHE_DIR
+export UV_CACHE_DIR SUPERDIRT_HOST SUPERDIRT_PORT
 
-.PHONY: help bootstrap sync ml kernel lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
+.PHONY: help bootstrap sync ml kernel superdirt superdirt-foreground lab lab-server lab-remote sim demo benchmark pki manifest release-readiness-check container-build container-run docker-build docker-run podman-build podman-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -39,7 +43,13 @@ ml: ## Synchronize optional ML dependency group
 kernel: ## Install the project .venv Jupyter kernel and pin notebooks to it
 	$(UV) run python scripts/install_jupyter_kernel.py
 
-lab: kernel ## Launch JupyterLab locally
+superdirt: ## Start local SuperDirt for notebook OSC audition
+	$(UV) run python scripts/start_superdirt.py --host $(SUPERDIRT_HOST) --port $(SUPERDIRT_PORT) --bind-address $(SUPERDIRT_BIND) --wait-seconds $(SUPERDIRT_WAIT)
+
+superdirt-foreground: ## Run SuperDirt launcher in the foreground for debugging
+	$(UV) run python scripts/start_superdirt.py --host $(SUPERDIRT_HOST) --port $(SUPERDIRT_PORT) --bind-address $(SUPERDIRT_BIND) --foreground
+
+lab: kernel superdirt ## Launch JupyterLab locally with SuperDirt OSC target
 	$(UV) run jupyter lab --ip=$(JUPYTER_IP) --port=$(JUPYTER_PORT) --no-browser --ServerApp.root_dir=.
 
 lab-server: ## Launch JupyterLab on all interfaces (token authentication remains enabled)
