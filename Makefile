@@ -8,10 +8,11 @@ JUPYTER_IP ?= 127.0.0.1
 JUPYTER_PORT ?= 8888
 GIT_REMOTE ?= origin
 VERSION ?=
+IMAGE ?= distsequencer:latest
 
 export UV_CACHE_DIR
 
-.PHONY: help bootstrap sync ml lab lab-server lab-remote sim demo benchmark pki manifest test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
+.PHONY: help bootstrap sync ml lab lab-server lab-remote sim demo benchmark pki manifest docker-build docker-run test test-unit test-bdd lint format format-check typecheck check build clean push pr promote release
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -47,6 +48,12 @@ pki: ## Create local development CA and node certificate
 
 manifest: ## Write a physical deployment manifest
 	$(UV) run distsequencer manifest
+
+docker-build: ## Build the runtime container image
+	docker build -t $(IMAGE) .
+
+docker-run: ## Run the simulator in the runtime container image
+	docker run --rm $(IMAGE) sim
 
 test: ## Run unit and BDD tests
 	$(UV) run pytest -q

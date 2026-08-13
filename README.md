@@ -114,6 +114,18 @@ make manifest
 make pki
 ```
 
+## Docker
+
+Build and run the CPU-friendly runtime image:
+
+```bash
+make docker-build
+make docker-run
+```
+
+The image installs only the base runtime dependencies. It does not include the optional `ml` group,
+JupyterLab, test tools, or generated local artifacts.
+
 ## GitHub Promotion
 
 ```bash
